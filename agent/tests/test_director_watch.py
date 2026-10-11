@@ -66,6 +66,31 @@ def test_precompleted_never_resumes(tmp_path):
     assert run(tmp_path,game)['goal_met']
     assert 'game.speed' not in game.calls
 
+@pytest.mark.parametrize('precompleted', [False, True])
+def test_final_observation_must_still_be_paused(tmp_path, precompleted):
+    class ResumedDuringFinalRead(Game):
+        def __init__(self):
+            super().__init__(complete=True, precompleted=precompleted)
+            self.final_pause = False
+            self.status_after_pause = 0
+        def rpc(self, url, method, params):
+            if method == 'game.pause':
+                self.final_pause = True
+            if method == 'game.status' and self.final_pause:
+                self.status_after_pause += 1
+                if self.status_after_pause == 2:
+                    self.paused = False  # Human/mod resumes after the first pause verification.
+            return super().rpc(url, method, params)
+    game = ResumedDuringFinalRead()
+    result = run(tmp_path, game)
+    assert result['reason'] == 'error'
+    assert result['paused'] is False
+    assert result['goal_met'] is False
+    assert result['progress']['current'] == 1
+    assert 'resumed during final observation' in result['pause_error']
+    assert game.calls.count('game.pause') == 1
+    assert game.calls.count('game.speed') == (0 if precompleted else 1)
+
 def test_limits(tmp_path):
     assert run(tmp_path,Game(),stall_ticks=100)['reason']=='stalled'
     assert run(tmp_path,Game(),max_ticks=100)['reason']=='game_time_limit'

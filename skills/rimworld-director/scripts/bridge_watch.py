@@ -151,6 +151,8 @@ def wait(url, repo, goal, *, write=False, seconds=30, poll=2, speed=1,
                     final = observe(url, goal)
                     check_session(current['status'], final['status'])
                     current = final
+                    if current['status'].get('paused') is not True:
+                        raise RuntimeError('Game resumed during final observation; pause was not confirmed')
                     reason = reason_for(current, changes(baseline, current), goal) or reason
             except Exception as exc:
                 pause_error = str(exc)
