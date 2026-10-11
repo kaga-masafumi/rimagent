@@ -46,10 +46,11 @@ class Clock:
         self.elapsed += duration
         self.game.tick += -1 if self.game.options.get('rollback') else 100
 
-def run(tmp_path, game, **kwargs):
+def run(tmp_path, game, *, mode='emergency', seconds=3, poll=1, **kwargs):
     clock = Clock(game)
     with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
-        return watch.wait('http://localhost', tmp_path, GOAL, write=True, seconds=3, poll=1, **kwargs)
+        return watch.wait('http://localhost', tmp_path, GOAL, write=True,
+                          seconds=seconds, poll=poll, mode=mode, **kwargs)
 
 @pytest.mark.parametrize('options,reason', [({'complete': True},'completed'), ({'event':True},'event'), ({'danger':True},'danger'), ({},'timeout'), ({'rollback':True},'error'), ({'fail_resume':True},'error'), ({'fail_pause':True},'error'), ({'fail_read':True},'error')])
 def test_wait_exits_and_attempts_pause(tmp_path, options, reason):
@@ -67,7 +68,8 @@ def test_precompleted_never_resumes(tmp_path):
     assert 'game.speed' not in game.calls
 
 @pytest.mark.parametrize('precompleted', [False, True])
-def test_final_observation_must_still_be_paused(tmp_path, precompleted):
+@pytest.mark.parametrize('mode', ['routine', 'emergency'])
+def test_final_observation_must_still_be_paused(tmp_path, precompleted, mode):
     class ResumedDuringFinalRead(Game):
         def __init__(self):
             super().__init__(complete=True, precompleted=precompleted)
@@ -82,7 +84,7 @@ def test_final_observation_must_still_be_paused(tmp_path, precompleted):
                     self.paused = False  # Human/mod resumes after the first pause verification.
             return super().rpc(url, method, params)
     game = ResumedDuringFinalRead()
-    result = run(tmp_path, game)
+    result = run(tmp_path, game, mode=mode)
     assert result['reason'] == 'error'
     assert result['paused'] is False
     assert result['goal_met'] is False
@@ -104,7 +106,7 @@ def test_lock_blocks_all_calls(tmp_path):
         with pytest.raises(RuntimeError,match='active'): watch.wait('http://localhost',tmp_path,GOAL,write=True)
         rpc.assert_not_called()
 
-@pytest.mark.parametrize('kwargs',[{'write':False},{'write':True,'seconds':61},{'write':True,'speed':4},{'write':True,'poll':0},{'write':True,'seconds':float('nan')}])
+@pytest.mark.parametrize('kwargs',[{'write':False},{'write':True,'seconds':121},{'write':True,'speed':4},{'write':True,'poll':0},{'write':True,'seconds':float('nan')}])
 def test_invalid_options_do_not_contact_game(tmp_path,kwargs):
     with patch.object(watch.bridge,'rpc') as rpc:
         with pytest.raises(ValueError): watch.wait('http://localhost',tmp_path,GOAL,**kwargs)
@@ -123,6 +125,67 @@ def test_filtered_count_and_stock():
     with patch.object(watch.bridge,'rpc',side_effect=Game().rpc):
         assert watch.observe('http://localhost',GOAL)['value']==0
         assert watch.observe('http://localhost',{'kind':'stock_count','def':'WoodLog','at_least':100})['value']==50
+
+def test_routine_runs_full_interval_despite_progress_and_normal_alerts(tmp_path):
+    game = Game(complete=True, event=True)
+    result = run(tmp_path, game, mode='routine', seconds=120, poll=2)
+    assert result['reason'] == 'completed'
+    assert result['goal_met'] and result['paused']
+    assert result['elapsed_wall_seconds'] == 120
+    assert result['new_alerts'][0]['label'] == 'Food'
+    assert game.calls.count('game.speed') == 1
+    assert game.calls.count('game.pause') == 1
+    assert game.calls.count('map.find') == 2  # Baseline and final, never every safety poll.
+
+def test_routine_default_does_not_stop_at_old_tick_limit(tmp_path):
+    game = Game()
+    clock = Clock(game)
+    with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
+        result = watch.wait('http://localhost', tmp_path, GOAL, write=True)
+    assert result['reason'] == 'routine_check'
+    assert result['elapsed_wall_seconds'] == 120
+    assert result['elapsed_game_ticks'] == 6000
+
+@pytest.mark.parametrize('threat', ['hostile', 'critical', 'letter', 'high_danger'])
+def test_routine_interrupts_for_emergencies(tmp_path, threat):
+    class Threat(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if self.resumed:
+                if method == 'state.summary' and threat == 'hostile': result['hostiles'] = [{'id':'Raider'}]
+                if method == 'state.summary' and threat == 'high_danger': result['danger'] = 'High'
+                if method == 'state.alerts' and threat == 'critical': result = [{'label':'Emergency','priority':'Critical'}]
+                if method == 'state.letters' and threat == 'letter': result = [{'id':1,'def':'ThreatBig'}]
+            return result
+    game = Threat()
+    result = run(tmp_path, game, mode='routine', seconds=120, poll=2)
+    assert result['reason'] == 'danger' and result['paused']
+    assert result['elapsed_wall_seconds'] == 2
+
+def test_emergency_mode_checks_each_second(tmp_path):
+    class Delayed(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary' and self.tick >= 200: result['downed'] = 1
+            return result
+    game = Delayed()
+    clock = Clock(game)
+    with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
+        result = watch.wait('http://localhost', tmp_path, GOAL, write=True, mode='emergency')
+    assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 1
+
+def test_routine_remembers_a_normal_alert_that_resolved_between_reviews(tmp_path):
+    class Transient(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.alerts' and self.tick == 200:
+                return [{'label': 'Idle', 'priority': 'Medium'}]
+            return result
+    result = run(tmp_path, Transient(), mode='routine', seconds=6, poll=2)
+    assert result['reason'] == 'routine_check' and result['paused']
+    assert result['new_alerts'] == []
+    assert result['observed_events']['new_alerts'][0]['label'] == 'Idle'
+    assert result['observed_events']['resolved_alerts'][0]['label'] == 'Idle'
 
 @pytest.mark.parametrize('goal',[
     {'kind':'python','def':'Bed','at_least':1},
@@ -164,7 +227,7 @@ def test_cli_http_roundtrip(tmp_path):
     try:
         result=subprocess.run([sys.executable,str(Path(watch.__file__)),
             '--url',f'http://127.0.0.1:{server.server_port}','--repo',str(tmp_path),
-            'wait','--goal-file',str(goal_path),'--write','--seconds','0.1','--poll','0.01'],
+            'wait','--goal-file',str(goal_path),'--write','--mode','emergency','--seconds','0.1','--poll','0.01'],
             capture_output=True,text=True,timeout=10)
         assert result.returncode==0,result.stderr
         packet=json.loads(result.stdout)

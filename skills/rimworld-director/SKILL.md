@@ -29,31 +29,36 @@ Codex自身が判断し、RimBridgeのローカルHTTP経由で操作する。�
 
 「自律的に」「完成まで任せる」等の指示では、実行中のCodexが判断→操作→待機→検証を繰り返す。別LLMや常駐Runnerを起動しない。チャット終了後の動作は保証しない。
 
-1. 目標・操作範囲・完了条件を定める。既定上限は10待機サイクル、実時間15分（判断・操作時間も含む）。指定された短い上限を優先し、各サイクル前に残時間を確認する。
-2. 通常の実行手順で停止・調査・操作を行う。手順7の直接再開を行わず、下記waitに再開と停止を任せる。既存警告も調査し危険を放置しない。
-3. `<repo>/runs/codex-goal.json`にUTF-8 JSONの完了条件を書く。実データのdefNameを使う。現対応はbuilding_count（完成建物数）、stock_count（保管在庫数）のみ。任意コード評価は使わない。
+### 平時と緊急時
+
+平時は `--mode routine`（既定）で120秒ごとにまとめて判断する。この間、ゲームは進行を続け、Pythonだけで2秒ごとに安全監視する。作業待ち人数、普通の通知、目標の進捗では途中停止しない。完成判定と詳しい状態取得は開始・終了時に行い、終了時に停止してCodexが次の設定を考える。
+
+緊急時は `--mode emergency` で1秒ごとに確認し、目標達成・新しい警告・新しい通知でも停止する。既定の待機上限は30秒。両モードとも、敵・倒れた入植者・ゲームのHigh危険度・Critical警告・新たなThreatBig/ThreatSmall/Death通知・接続異常は即座に中断する。ゲームが人間に停止された場合も終了し、自動再開しない。検知はポーリングで、RPCの通信時間や観測間の短命イベントには限界がある。重大な警告を確認したら、対処または人間の判断まで再開しない。
+
+1. 目標・操作範囲・完了条件を定める。既定上限は10待機サイクル、実時間15分（判断・操作時間も含む）。各サイクル前に残時間を確認し、最後の待機を残時間に収める。
+2. 通常の実行手順で停止・調査・操作を行う。手順7の直接再開を行わず、waitに再開と停止を任せる。既存警告も調査する。
+3. `<repo>/runs/codex-goal.json`にUTF-8 JSONの完了条件を書く。現対応はbuilding_count（完成建物数）、stock_count（保管在庫数）のみ。実データのdefNameを使い、任意コード評価はしない。
 
 ```json
 {"kind":"building_count","def":"Bed","at_least":3}
 ```
 
-在庫例： `{"kind":"stock_count","def":"WoodLog","at_least":100}`。
-既存建物も数える。「新しく1台」なら観測した既存数+1を指定する。完成建物数は割当・到達可能性・電源・寝床の使用可能性を保証しない。必要な追加条件は通常RPCで確認してから目的達成を報告する。在庫数は保管在庫であり地面にある全資材数ではない。
+在庫例は `{"kind":"stock_count","def":"WoodLog","at_least":100}`。既存建物も数えるため「新しく1台」は既存数+1を指定する。完成数は割当・到達可能性・通電・使用可能性を保証しない。目的達成の報告前に必要な追加条件を通常RPCで検証する。在庫数は保管分であり全地面資材ではない。
 
-4. 観測・待機する。監視時間の指定は最大60秒、既定30秒。RPC通信には既存の15秒タイムアウトがあるため、取得・停止処理を含む実際の呼出時間は指定時間を超え得る。Pythonのみが監視し、同じコントローラーロックを終了まで保持する。
+4. 観測・待機する。1回の待機は最大120秒。既存RPCの15秒タイムアウトにより、取得・停止を含む時間は指定時間を超え得る。コントローラーロックは待機終了まで保持する。Codexのツール呼出はバックグラウンド実行にして60秒以内に進捗を伝え、120秒のブロッキング待機をしない。
 
 ```powershell
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> observe --goal-file <repo>/runs/codex-goal.json
-python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --seconds 30 --speed 1
+python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode routine
+python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode emergency
 ```
 
-5. JSONのpaused:trueを確認する。completedなら用途まで再検証して終了する。timeout/game_time_limitなら進捗を読み続行する。stalledなら調査し小さな対策を行う。建物数が増えないだけで建築途中の作業が停止したと断定しない。同じ対策で改善しなければ人間に戻す。
-6. eventならnew_alerts/worsened_alerts/new_lettersを読む。範囲内の問題のみ対処し再び待つ。danger（敵または倒れた入植者）、game_paused、error、paused:falseなら中止し報告する。goal_met:trueでも危険・エラーを優先する。
-7. 終了・上限到達時は停止して成果・未達事項・警告を報告する。変更失敗を自動再送しない。
+5. paused:trueを確認する。completedなら用途を再検証して終了する。routine_check/timeout/game_time_limitなら進捗とまとめられたnew_alerts/worsened_alerts/new_lettersとobserved_eventsを読み、次の作業または待機を選ぶ。普通の警告をすべて緊急扱いにしない。明示した `--max-ticks` は両モードの早期上限、`--stall-ticks` は緊急時に早期判定、平時は120秒の判断時に判定する。既定では両制限を使わず、建築中に完成数が変わらないことだけで停滞と断定しない。
+6. eventなら内容を読む。danger/game_paused/error/paused:falseなら中止し報告する。goal_met:trueでも危険・エラーを優先する。終了・上限到達時は停止して成果・未達事項・警告を報告する。変更失敗を自動再送しない。
 
-各待機は開始時の警告・通知を基準とし、新規・優先度上昇・解消を返す。既存警告はactive_alertsに残るが再通知しない。説明文だけの変化は悪化判定しない。通知はIDで重複を抑える。ポーリングなので観測間に出現・消失した通知は取りこぼし得る。
+警告・通知は開始時を基準に、新規・優先度上昇・解消を返す。既存警告はactive_alertsに残る。説明文だけの変化は悪化判定しない。通知はIDで重複を抑える。観測で確認した途中の変化はobserved_eventsに重複を抑えて残す（区切りまでに解消しても残す）。停止後の最終観測でも停止状態を検証する。
 
-終了時は停止確認後に最新状態を再取得する。異常時は一度だけ停止を試み、通信断で停止確認できなければ人間に確認を依頼する。seed・map_size・tick・イベントseqの逆行で切替を検出するが、同一seed/サイズで時刻が進むロードは識別できない。実行中は人間にロード・マップ切替を行わないよう伝える。
+異常時は一度だけ停止を試み、通信断で停止確認できなければ手動停止を依頼する。seed・map_size・tick・seqの逆行で切替を検出するが、同一seed/サイズで時刻が進むロードは識別できない。実行中に人間がロード・マップ切替しないよう伝える。
 
 ## Steward
 
