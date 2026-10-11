@@ -125,7 +125,7 @@ def create_app(bus: Any, bridge: Any, controls: Any) -> FastAPI:
     async def api_state() -> dict[str, Any]:
         game: Any = None
         try:
-            game = await _call_with_timeout(bridge.status, timeout=5.0)
+            game = await _call_with_timeout(lambda: bridge.status(timeout_ms=2000), timeout=5.0)
         except Exception:  # noqa: BLE001
             game = None
         ctl = {"paused": bool(getattr(controls, "paused", False)), "no_pause": getattr(controls, "no_pause", None), "sandbox": bool(getattr(controls, "sandbox", False)), "parallel": bool(getattr(controls, "parallel", False)), "steward": getattr(controls, "steward", None), "orders_off": getattr(controls, "orders_off", None)}
@@ -525,7 +525,7 @@ footer .r{margin-left:auto}
     <label title="Do not pause the game while the model thinks"><input type="checkbox" id="c-nopause" onchange="control('no_pause',this.checked)"> no-pause</label>
     <label title="God mode: blueprints complete instantly and cost nothing, all research unlocked, the run is marked assisted. The agent is told to experiment and write what it learns into skills." style="color:var(--warn)"><input type="checkbox" id="c-parallel" onchange="control('parallel',this.checked)"> <span title="Calm steps fan out to four specialist LLM streams (economy, builder, guardian, caretaker) running at the same time; urgent steps stay single-stream">parallel x4</span></label>
     <label title="God mode" style="color:var(--warn)"><input type="checkbox" id="c-sandbox" onchange="if(!this.checked||confirm('Turn on sandbox / god mode? Builds become free and instant, all research unlocks, and this run is marked assisted.'))control('sandbox',this.checked);else this.checked=false"> sandbox</label>
-    <button class="danger" onclick="if(confirm('Kill the agent process?'))control('kill')">Kill</button>
+    <button class="danger" onclick="control('kill')">Stop agent + pause game</button>
   </div>
 </header>
 
@@ -1221,7 +1221,7 @@ async function loadUsage() {
       + (j.hold_reason ? `<p style="color:var(--warn)"><strong>Game held:</strong> ${esc(j.hold_reason)}</p>` : '<p>Budget active.</p>')
       + (j.outstanding || []).map(r => `<p>Outstanding ${esc(r.id)}: ${esc(r.status)} · ${usd(r.reserved_usd)}</p>`).join('');
     $('usage-requests').innerHTML = '<table><thead><tr><th>Request / time</th><th>Model / stream</th><th>Status</th><th>Tokens in / out</th><th>Estimated USD</th></tr></thead><tbody>'
-      + (j.requests || []).map(r => `<tr><td>${esc(r.id)}<br>${esc(new Date(r.sent_at * 1000).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'}))}</td><td>${esc(r.model)}<br>${esc((r.meta || {}).stream || '')}</td><td>${esc(r.status)}</td><td>${r.usage ? `${r.usage.input_tokens} / ${r.usage.output_tokens}` : 'unknown'}</td><td>${r.cost_usd == null ? 'unpriced / unknown' : usd(r.cost_usd)}</td></tr>`).join('') + '</tbody></table>';
+      + (j.requests || []).map(r => `<tr><td>${esc(r.id)}<br>${esc(new Date(r.sent_at * 1000).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'}))}</td><td>${esc(r.model)}<br>${esc((r.meta || {}).stream || '')}</td><td>${esc(r.status)}${r.error ? `<br>${esc(r.error)}` : ''}</td><td>${r.usage ? `${r.usage.input_tokens} / ${r.usage.output_tokens}` : 'unknown'}</td><td>${r.cost_usd == null ? 'unpriced / unknown' : usd(r.cost_usd)}</td></tr>`).join('') + '</tbody></table>';
   } catch (e) { $('usage-summary').textContent = 'Usage error: ' + e.message; $('budget-warning').textContent = 'ERROR'; }
 }
 

@@ -89,19 +89,34 @@ def test_openai_parameters_and_schema_copy(tmp_path, monkeypatch):
     client = Client(response())
     llm = make_llm(tmp_path, monkeypatch, client, provider="openai")
     tools = [{"type": "function", "function": {"name": "end_turn", "parameters": {
-        "type": "object", "properties": {"wake_on": {"type": "array"}}, "required": [], "additionalProperties": True}}}]
+        "type": "object", "properties": {"wake_on": {"type": "array"}, "params": {"type": "object"}}, "required": [], "additionalProperties": True}}}]
     original = deepcopy(tools)
     reply = llm.chat([{"role": "user", "content": "hi"}], tools, tool_choice="required")
     kw = client.calls[0]
-    assert kw["max_completion_tokens"] == 4000 and kw["reasoning_effort"] == "low"
+    assert kw["max_completion_tokens"] == 4000 and kw["reasoning_effort"] == "none"
     assert kw["service_tier"] == "default" and kw["store"] is False
     assert not set(kw) & {"max_tokens", "temperature", "extra_body"}
     assert kw["tools"][0]["function"]["strict"] is False
     assert kw["tools"][0]["function"]["parameters"]["properties"]["wake_on"]["items"] == {}
+    assert kw["tools"][0]["function"]["parameters"]["properties"]["params"] == {"type": "object", "properties": {}, "additionalProperties": True}
     assert tools == original
     assert reply.provider == "openai" and reply.finish_reason == "stop"
     assert llm.provider.base_url == "https://api.openai.com/v1"  # inherited localhost must not receive the key
     assert llm.ledger.snapshot()["daily_usd"] == "0.0032"
+
+
+@pytest.mark.parametrize('effort', ['low', 'high', None])
+def test_luna_chat_tools_force_none_but_tool_free_calls_keep_configured_reasoning(tmp_path, monkeypatch, effort):
+    client = Client(response(), response())
+    llm = make_llm(tmp_path, monkeypatch, client, provider='openai', reasoning_effort=effort)
+    tool = {'type': 'function', 'function': {'name': 'end_turn', 'parameters': {'type': 'object', 'properties': {}}}}
+    llm.chat([{'role': 'user', 'content': 'hi'}], [tool], thinking=True)
+    llm.chat([{'role': 'user', 'content': 'hi'}], thinking=True)
+    assert client.calls[0]['reasoning_effort'] == 'none'
+    if effort is None:
+        assert 'reasoning_effort' not in client.calls[1]
+    else:
+        assert client.calls[1]['reasoning_effort'] == effort
 
 
 def test_openai_no_thinking_maps_to_none_and_empty_does_not_retry(tmp_path, monkeypatch):
@@ -160,6 +175,18 @@ def test_rate_limit_is_known_unbilled_and_can_retry(tmp_path, monkeypatch):
     assert llm.ledger.snapshot()["daily_usd"] == "0.0032"
 
 
+def test_schema_error_detail_is_recorded_without_api_key(tmp_path, monkeypatch):
+    error = api_error(BadRequestError, 400, None)
+    error.body.update(message='Invalid schema; test-key-no-network and sk-example-secret', param='tools[0].function.parameters')
+    client = Client(error)
+    llm = make_llm(tmp_path, monkeypatch, client, provider='openai')
+    with pytest.raises(LLMBlocked):
+        llm.chat([{'role': 'user', 'content': 'hi'}])
+    detail = llm.ledger.snapshot()['requests'][0]['error']
+    assert 'Invalid schema' in detail and 'tools[0].function.parameters' in detail
+    assert 'test-key-no-network' not in detail and 'sk-example-secret' not in detail
+
+
 def test_paid_response_without_usage_is_held(tmp_path, monkeypatch):
     client = Client(response(with_usage=False))
     llm = make_llm(tmp_path, monkeypatch, client, provider="openai")
@@ -192,7 +219,33 @@ def test_insufficient_budget_sends_no_request(tmp_path, monkeypatch):
     assert not client.calls
 
 
-def test_preflight_rejects_missing_key_unknown_provider_and_unknown_price(monkeypatch):
+def test_stop_during_request_records_usage_but_discards_returned_reply(tmp_path, monkeypatch):
+    client = Client()
+    llm = make_llm(tmp_path, monkeypatch, client, provider='openai')
+    def pending(**kw):
+        client.calls.append(kw)
+        llm.ledger.stop()
+        return response('must not execute')
+    client.chat.completions.create = pending
+    with pytest.raises(LLMBlocked, match='operator_stop'):
+        llm.chat([{'role': 'user', 'content': 'hi'}])
+    assert llm.ledger.snapshot()['daily_usd'] == '0.0032'
+    with pytest.raises(LLMBlocked, match='operator_stop'):
+        llm.chat([{'role': 'user', 'content': 'hi'}])
+    assert len(client.calls) == 1
+
+
+def test_openai_oversized_tool_array_is_rejected_locally(tmp_path, monkeypatch):
+    client = Client()
+    llm = make_llm(tmp_path, monkeypatch, client, provider='openai')
+    specs = [{'type': 'function', 'function': {'name': f'tool_{i}'}} for i in range(129)]
+    with pytest.raises(ValueError, match='128'):
+        llm.chat([{'role': 'user', 'content': 'hi'}], specs)
+    assert not client.calls and not llm.ledger.snapshot()['requests']
+
+
+def test_preflight_rejects_missing_key_unknown_provider_and_unknown_price(monkeypatch, tmp_path):
+    monkeypatch.setattr("rimagent.providers.ROOT", tmp_path)
     cfg = deepcopy(_DEFAULTS)
     cfg["llm"].update(provider="openai", model="gpt-5.6-luna")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

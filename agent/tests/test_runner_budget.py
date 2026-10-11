@@ -182,3 +182,26 @@ def test_registry_and_watchers_share_execution_gate(runner):
     assert run_all(runner.ctx, []) == []
     result, ok = runner.registry.execute(runner.ctx, "run_python", {"code": "raise AssertionError('should not execute')"})
     assert not ok and "LLMBlocked" in result["error"]
+
+
+def test_dashboard_stop_pauses_game_and_blocks_actions_and_api_requests(runner):
+    client = TestClient(create_app(runner.bus, runner.bridge, runner.controls))
+    assert client.post('/api/control', json={'action': 'kill'}).json()['ok']
+    assert runner.stop and runner.controls.paused
+    assert runner.recorded[-1] == ('game.pause', {'paused': True})
+    assert not runner.llm.ledger.hold_reason  # ordinary stopping is not a persistent budget hold
+    with pytest.raises(LLMBlocked, match='operator_stop'):
+        runner.llm.ledger.reserve('openai', 'gpt-5.6-luna', LUNA, 1000, 1000)
+    with pytest.raises(LLMBlocked, match='operator_stop'):
+        runner.bridge.call('game.pause', paused=False)
+
+
+def test_stop_inside_think_does_not_restore_game_or_execute_returned_tools(runner):
+    runner.with_pause(runner.controls.kill)
+    assert all(method == 'game.pause' and p['paused'] for method, p in runner.recorded)
+    class PendingReply:
+        def chat(self, *a, **kw):
+            pytest.fail('Stopped think must send no API call')
+    runner.ctx.llm = PendingReply()
+    result = think(runner.ctx, 'stopped', system='test')
+    assert 'operator_stop' in result.stop_reason and result.calls == 0

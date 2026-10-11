@@ -135,6 +135,7 @@ class Registry:
                         # remember the model's explicit choice so the runner keeps it after the step
                         ctx.extra["model_speed"] = 0 if (method_name == "game.pause" and params.get("paused", True)) else int(params.get("speed", 1) if method_name == "game.speed" else ctx.extra.get("model_speed", 1))
                     return result
+                fn._rpc_method = method_name
                 return fn
 
             self.tools[name] = Tool(

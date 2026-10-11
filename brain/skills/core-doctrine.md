@@ -1,5 +1,5 @@
 ---
-always: false
+always: true
 description: How rimagent plays and improves itself — priorities, first-day setup,
   and survival-first planning.
 name: core-doctrine
@@ -26,3 +26,6 @@ Do not expand the base or accept missions while food is under 6 days, shelter is
 
 ## Reflection
 Record concrete food duration, raid timing/size, deaths, and the earliest preventable failure. Edit this skill only when timeline evidence supports a change.
+
+## Steward coordination
+Standing orders already handle combat, rescue, unforbid, corpses, beds, policies, blueprints, and fire. Check `watcher_list`; delete any watcher that drafts, rescues, unforbids, buries, assigns beds or flips food policy, because it is redundant and can conflict with the standing orders. Keep this doctrine loaded with `always: true` when editing it.

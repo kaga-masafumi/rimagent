@@ -7,7 +7,8 @@ from rimagent.dashboard.app import create_app
 
 
 class FakeBridge:
-    def status(self):
+    def status(self, timeout_ms=None):
+        assert timeout_ms == 2000
         return {"state": "menu"}
 
     def events(self, since: int, limit: int = 500):

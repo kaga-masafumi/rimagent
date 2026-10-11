@@ -15,6 +15,9 @@ runs/
 sft/
 .DS_Store
 config.local.yaml
+.env
+.env.*
+!.env.example
 mod/ledger.jsonl
 mod-steward/1.6/Assemblies/
 mod-steward/Source/obj/

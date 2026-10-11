@@ -18,6 +18,37 @@ LOG_CLIP = 3000
 MARK = '\n…(log clipped {n} chars; the model was given the full result)'
 
 
+def _group_bridge_tools(ctx: Context, tools: list[dict]) -> tuple[list[dict], str, dict[str, str]]:
+    """Group advertised bridge RPCs, preserving the stream's filtered allowlist."""
+    cap = getattr(getattr(ctx.llm, "provider", None), "max_tools", None)
+    if cap is None or len(tools) <= cap:
+        return tools, "", {}
+    bridge = [s for s in tools if ctx.registry.tools[s["function"]["name"]].source == "bridge"]
+    other = [s for s in tools if s not in bridge]
+    if not bridge or len(other) + 1 > cap:
+        raise LLMBlocked("tool_limit: too many non-Bridge tools; reduce brain tools before retrying")
+    if any(s["function"]["name"] == "rimagent_bridge_call" for s in other):
+        raise LLMBlocked("tool_limit: rimagent_bridge_call is reserved for Bridge routing")
+    routes = {}
+    catalog = []
+    for spec in bridge:
+        fn = spec["function"]
+        # Bridge method names may themselves contain underscores: use the registered binding.
+        method = getattr(ctx.registry.tools[fn["name"]].fn, "_rpc_method", None)
+        if method is None:
+            raise LLMBlocked("tool_limit: Bridge tool lacks its RPC method binding")
+        routes[method] = fn["name"]
+        catalog.append({"method": method, "description": fn["description"], "parameters": fn["parameters"]})
+    grouped = {"type": "function", "function": {
+        "name": "rimagent_bridge_call",
+        "description": "Call a game Bridge method from the catalog in the system message. Pass its arguments in params.",
+        "parameters": {"type": "object", "properties": {
+            "method": {"type": "string", "enum": list(routes)},
+            "params": {"type": "object", "additionalProperties": True}}, "required": ["method"]}}}
+    hint = "\n\n## Bridge tool catalog\nUse rimagent_bridge_call(method, params) instead of direct rw_* calls for these methods:\n" + json.dumps(catalog, ensure_ascii=False)
+    return other + [grouped], hint, routes
+
+
 def clip(text: str, limit: int = LOG_CLIP) -> str:
     """Shorten a tool result for the log, and say that is what happened."""
     return text if len(text) <= limit else text[:limit] + MARK.format(n=len(text) - limit)
@@ -106,6 +137,12 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
     system = system or build_system(ctx, situation_hint or user_message[:2000])
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user_message}]
     tools = ctx.registry.specs(groups=tool_groups, allow=tool_allow)
+    try:
+        tools, catalog, bridge_routes = _group_bridge_tools(ctx, tools)
+    except LLMBlocked as exc:
+        return StepResult(notes=str(exc), stop_reason=str(exc))
+    if catalog:
+        messages[0]["content"] += catalog
     st = ctx.stream
     ctx.emit("think_start", {"trigger": trigger, "prompt_chars": len(system) + len(user_message), "tools": len(tools), "stream": st})
     step = 0
@@ -166,9 +203,17 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
                 res.stop_reason = res.notes = str(exc)
                 break
             name, args, cid = tc["name"], tc["arguments"], tc["id"]
+            routing_error = None
+            if name == "rimagent_bridge_call" and bridge_routes:
+                method = args.get("method") if isinstance(args, dict) else None
+                params = args.get("params", {}) if isinstance(args, dict) else None
+                if not isinstance(method, str) or method not in bridge_routes or not isinstance(params, dict):
+                    routing_error = {"error": "Bridge method is not advertised for this stream, or params is not an object"}
+                else:
+                    name, args = bridge_routes[method], params
             ctx.emit("tool_call", {"name": name, "args": args, "id": cid, "stream": st})
             t1 = time.time()
-            result, ok = ctx.registry.execute(ctx, name, args)
+            result, ok = (routing_error, False) if routing_error else ctx.registry.execute(ctx, name, args)
             res.calls += 1
             image = None
             if isinstance(result, dict) and "_image_png_b64" in result:

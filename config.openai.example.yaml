@@ -1,9 +1,10 @@
-# Copy to config.local.yaml; do not put secrets here. Restart the agent after changing settings.
+# Copy to config.local.yaml; put the API key in root .env or the environment.
+# Restart the agent after changing settings or credentials.
 llm:
   provider: openai
   model: gpt-5.6-luna
   api_key_env: OPENAI_API_KEY
-  reasoning_effort: low
+  reasoning_effort: low  # Luna Chat + tools uses none; this applies to tool-free calls
   max_tokens: 4000
   max_streams: 1
   timeout_s: 240

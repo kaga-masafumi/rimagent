@@ -3,7 +3,8 @@
 Windows 11 setup, OpenAI/Qwen switching, and persistent cost limits are documented in
 [Windows / LLM / budget guide](docs/WINDOWS_LLM.md). Watchdog source editing is disabled by default.
 Copy [config.openai.example.yaml](config.openai.example.yaml) to `config.local.yaml` to select OpenAI;
-legacy Qwen configuration continues to work without a provider key.
+legacy Qwen configuration continues to work without a provider key. OpenAI credentials can be loaded
+from a repository-root `.env` (copy [.env.example](.env.example)); existing environment variables take precedence.
 
 **An LLM that plays RimWorld and rewrites its own playbook between colonies.**
 

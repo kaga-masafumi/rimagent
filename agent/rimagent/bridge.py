@@ -77,8 +77,8 @@ class Bridge:
         raise BridgeError(r.text[:300])
 
     # ---- helpers ----
-    def status(self) -> dict[str, Any]:
-        return self.call("game.status")
+    def status(self, timeout_ms: int | None = None) -> dict[str, Any]:
+        return self.call("game.status", timeout_ms=timeout_ms)
 
     def wait_for(self, state: str = "playing", timeout: float = 300) -> dict[str, Any]:
         t0 = time.time()

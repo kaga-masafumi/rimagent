@@ -46,8 +46,9 @@ def cmd_play(args):
     try:
         r.run()
     except KeyboardInterrupt:
-        r.stop = True
         print("stopping")
+    finally:
+        r.request_stop()
 
 
 def cmd_think(args):

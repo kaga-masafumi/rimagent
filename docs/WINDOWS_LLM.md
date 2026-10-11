@@ -1,6 +1,6 @@
 # Windows 11・LLM切り替え・使用量管理
 
-RimWorld 1.6 / Steam、Python 3.11以上とuv、.NET 10 SDKを使用します。Mod本体のターゲットは既存のnet48、Verse非依存テストはnet10.0です。RimBridgeのソース・RPC・Stewardのゲーム操作ロジックは変更していません。
+RimWorld 1.6 / Steam、Python 3.12以上とuv、.NET 10 SDKを使用します。Mod本体のターゲットは既存のnet48、Verse非依存テストはnet10.0です。RimBridgeのソース・RPC・Stewardのゲーム操作ロジックは変更していません。
 
 ## Windowsの準備
 
@@ -19,6 +19,8 @@ cd ..
 Modsへの配置はディレクトリジャンクションです。同じリンクが既にあればそのまま使用し、他の既存フォルダは上書きしません。リンクを使えない場合は`-InstallMode Copy`で新規フォルダにAboutと1.6をコピーします。コピー配置後の更新は、既存配置を確認して別の場所へ退避してから再配置してください。
 
 RimWorldのMod画面でHarmony → RimBridge → RimBridge: Stewardの順に有効化し、Steam経由で再起動してください。DLLは起動時に読み込まれます。配置スクリプトは有効Mod一覧を変更しません。
+
+ゲームのオプションで「バックグラウンドで実行」(Run in background)をONにしてください。runInBackground=Falseの場合、PowerShellやブラウザへフォーカスを移すとゲームのメインスレッドが停止し、状態取得・一時停止・エージェント終了がタイムアウトします。Bridgeのhealthは過去にフレームが動いたことだけでもmainThreadAlive=trueになり得るため、health成功だけで現在のRPC実行が正常とは判断できません。RPCエラーのlast drainが長い場合はこの設定とゲームへのフォーカスを確認してください。
 
 ```powershell
 & ./script/restart-game.ps1
@@ -58,17 +60,47 @@ netsh http add urlacl url=http://127.0.0.1:8765/ user='DOMAIN\username'
 
 provider省略時は`qwen`です。Qwenのbase_url、api_key、max_tokens、temperature、enable_thinking、空応答時のthinking無効再試行を維持しています。料金未設定のQwenはトークンだけ記録し、費用は「未設定」と表示します。料金未設定の要求にUSD上限は適用されません。
 
-OpenAIは`config.openai.example.yaml`を`config.local.yaml`へコピーして選択します。既存のローカル設定がある場合は内容を統合してください。APIキーはPowerShellのセッション環境変数`OPENAI_API_KEY`に設定し、設定ファイル・Gitに保存しません。
+OpenAIは`config.openai.example.yaml`を`config.local.yaml`へコピーして選択します。既存のローカル設定がある場合は内容を統合してください。APIキーはリポジトリ直下の`.env`から読み込めます。`.env.example`を`.env`へコピーし、エディターで値を設定してください。
+
+```dotenv
+OPENAI_API_KEY=your-project-api-key
+```
+
+`.env`はGit管理から除外しています。UTF-8（BOM付きも可）、引用符とコメントに対応します。実行するフォルダがagent/でも直下の.envを参照し、RIMAGENT_ROOT指定時はそのルートを使います。環境変数が既に存在する場合はそちらを優先し、.env内の変数展開は行いません。`llm.api_key_env`で別の変数名を選んだ場合は.envにも同じ名前を設定します。APIキーをログ・doctorの結果へ出力しません。キー変更後はRunnerを再起動してください。
+
+確認コマンドは以下です（環境変数を使う場合は従来の設定方法も使用できます）。
 
 ```powershell
-$env:OPENAI_API_KEY = 'your-project-api-key'
 cd agent
 uv run --frozen rimagent doctor --require-watchdog-off --require-budget-active
 ```
 
 OpenAIは公式エンドポイントのChat Completionsを使い、QwenのURL・キーを引き継ぎません。`max_tokens`設定を`max_completion_tokens`として送信し、推論強度を`reasoning_effort`へ対応させます。thinking=falseはnoneです。temperatureとQwen固有パラメーターを送らず、ツールスキーマのコピーでstrict=falseと配列itemsを補います。RegistryやRPCの引数補正は維持します。
 
+実APIのHTTP 400で、gpt-5.6-lunaのChat Completionsではfunction toolsと推論を併用できず、reasoning_effort=noneまたはResponses APIが必要と確認しました。このアダプターではLunaのツール付き要求を自動的にnoneにします。ツールなしでthinking=trueの要求は設定したlowなどを維持し、manager等のthinking=falseの要求はnoneです。推論を伴うゲーム操作には将来のResponsesアダプターが必要です。
+
 切り替え・単価・予算変更はRunner再起動時に適用します。有料モデルへの自動フォールバックはありません。Responsesアダプターと社長の承認UIは今回の対象外です。
+
+大量のツール定義を送るとOpenAIがarray_above_max_lengthで要求を拒否する場合があります。128定義を超える思考では、Bridgeの操作をrimagent_bridge_call(method, params)という共通窓口へまとめ、各RPCの説明・引数をシステムメッセージのカタログへ移します。役割ごとに許可されたRPCだけを扱い、実行は元のRegistryへ戻すため引数補正やゲーム操作は同じです。Qwenのツール提示は従来どおりです。
+
+## 終了する
+
+ダッシュボードの「Stop agent + pause game」でエージェント終了とゲーム一時停止を要求できます。「End episode」は振り返りと次ゲームへ進む操作で、終了ボタンではありません。「Pause agent」は一時的な判断停止です。
+
+WindowsでCtrl+Cが届かない場合は、別のPowerShellから実行してください。
+
+```powershell
+cd C:\Users\kaga0\project\rimagent
+& ./script/stop.ps1
+```
+
+新しいAPI要求・ツール操作を禁止し、ゲームを一時停止します。送信済みのAPI要求は結果・usageを受け取るまで終了が遅れる場合があります。30秒待っても終了しない場合は、次のコマンドでこのリポジトリのrimagent playプロセスだけを確認して終了できます。
+
+```powershell
+& ./script/stop.ps1 -Force
+```
+
+RimWorldは閉じないので、一時停止を確認してゲーム内で保存してください。強制終了時は課金結果不明の予約が残る可能性があり、次回起動前にusageの照合が必要です。カスタムポートを使う場合は-DashboardUrl、-BridgeUrlを指定します。
 
 ## 料金と台帳
 

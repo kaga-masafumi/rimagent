@@ -57,6 +57,7 @@ class UsageLedger:
         self.on_hold = on_hold
         self.lock = threading.RLock()
         self._storage_error = ""
+        self._stopped = False
         cfg = cfg or {}
         self.daily = self._limit(cfg.get("daily_usd", 1))
         self.monthly = self._limit(cfg.get("monthly_usd", 10))
@@ -138,9 +139,16 @@ class UsageLedger:
             return self._held(db)
 
     def ensure_active(self):
+        if self._stopped:
+            raise LLMBlocked("operator_stop: agent is shutting down")
         reason = self.hold_reason
         if reason:
             raise LLMBlocked(reason)
+
+    def stop(self):
+        """Block new requests/actions locally; keep in-flight accounting intact."""
+        with self.lock:
+            self._stopped = True
 
     def _totals(self, db):
         day, month = self._period()
@@ -164,6 +172,8 @@ class UsageLedger:
         reason = ""
         rid = uuid.uuid4().hex
         with self._db() as db:
+            if self._stopped:
+                raise LLMBlocked("operator_stop: agent is shutting down")
             reason = self._held(db)
             if not reason and provider == "openai" and price is None:
                 reason = f"price_unknown: configure prices for {provider}/{model}"

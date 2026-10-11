@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -110,11 +111,26 @@ class LLM:
                 # 4xx rejection is known; timeouts/server errors can have incurred usage.
                 status = exc.status_code
                 code = getattr(exc, "code", None)
+                diagnostic = f"HTTP {status}: {code or 'api_error'}"
+                if status == 400 and isinstance(exc.body, dict):
+                    body = exc.body.get("error", exc.body)
+                    if isinstance(body, dict):
+                        # Record schema diagnostics, never request headers/bodies or SDK reprs.
+                        detail = str(body.get("message") or "")
+                        key = self.provider.api_key
+                        if key:
+                            detail = detail.replace(key, "[REDACTED]")
+                        detail = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[REDACTED]", detail)
+                        param = str(body.get("param") or "")
+                        if re.fullmatch(r"[A-Za-z0-9_.\[\]]{1,120}", param):
+                            diagnostic += f" ({param})"
+                        if detail:
+                            diagnostic += ": " + detail[:800]
                 blocked = self.provider.name == "openai" and (status in (400, 401, 403, 404) or code in (
                     "insufficient_quota", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
                     "organization_usage_limit_exceeded", "credit_balance_exhausted"))
                 self.ledger.failed(rid, uncertain=status >= 500 or status == 408,
-                                   error=f"HTTP {status}: {code or 'api_error'}", blocking=blocked)
+                                   error=diagnostic, blocking=blocked)
                 self.ledger.ensure_active()
                 raise
             except Exception:

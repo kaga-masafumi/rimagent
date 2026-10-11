@@ -5,6 +5,10 @@ from copy import deepcopy
 import os
 from typing import Any
 
+from dotenv import dotenv_values
+
+from .paths import ROOT
+
 
 class QwenProvider:
     name = "qwen"
@@ -27,6 +31,9 @@ class QwenProvider:
 
 def _schema(node: Any) -> None:
     if isinstance(node, dict):
+        if node.get("type") == "object" or (isinstance(node.get("type"), list) and "object" in node["type"]):
+            node.setdefault("properties", {})
+            node.setdefault("additionalProperties", True)
         if node.get("type") == "array" or (isinstance(node.get("type"), list) and "array" in node["type"]):
             node.setdefault("items", {})
         for value in node.values():
@@ -39,24 +46,38 @@ def _schema(node: Any) -> None:
 class OpenAIProvider:
     name = "openai"
     retry_empty = False
+    max_tools = 128
 
     def __init__(self, cfg: dict[str, Any]):
         self.cfg = cfg
         # Ignore the inherited Qwen base_url/api_key when selecting OpenAI.
         self.base_url = "https://api.openai.com/v1"
-        self.api_key = os.environ.get(cfg.get("api_key_env", "OPENAI_API_KEY"), "").strip()
+        key_name = cfg.get("api_key_env", "OPENAI_API_KEY")
+        key = os.environ.get(key_name)
+        if key is None:
+            env_path = ROOT / ".env"
+            # Read only the selected credential; do not mutate global environment or expand secrets.
+            values = dotenv_values(env_path, encoding="utf-8-sig", interpolate=False) if env_path.is_file() else {}
+            key = values.get(key_name)
+        self.api_key = (key or "").strip()
         if not self.api_key:
-            raise ValueError("Set the OPENAI_API_KEY environment variable (or llm.api_key_env) before using OpenAI")
+            raise ValueError(f"Set {key_name} in the environment or repository-root .env before using OpenAI")
         self.effort = cfg.get("reasoning_effort", "low")
         if self.effort not in ("none", "low", "medium", "high", "xhigh", "max", None):
             raise ValueError("Invalid llm.reasoning_effort")
 
     def request(self, messages, tools, *, model, thinking, max_tokens, temperature, tool_choice):
+        if tools and len(tools) > self.max_tools:
+            raise ValueError("OpenAI tool count exceeds 128; use the think loop's grouped Bridge tools")
         kw = {"model": model, "messages": messages, "max_completion_tokens": max_tokens,
               "service_tier": "default", "store": False}
         if self.effort is not None:
             kw["reasoning_effort"] = self.effort if thinking else "none"
         if tools:
+            # Luna's Chat endpoint rejects reasoning with function tools (HTTP 400).
+            # Keep configured reasoning for calls without tools; Responses can support it later.
+            if model == "gpt-5.6-luna":
+                kw["reasoning_effort"] = "none"
             specs = deepcopy(tools)
             for spec in specs:
                 spec["function"]["strict"] = False
