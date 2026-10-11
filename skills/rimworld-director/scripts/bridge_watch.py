@@ -93,7 +93,7 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True)
     return None
 
 
-def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=1,
+def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
          max_ticks=None, stall_ticks=None, mode='routine'):
     validate(goal)
     if mode not in ('routine', 'emergency'):
@@ -203,7 +203,7 @@ def main():
     parser.add_argument('--mode', choices=('routine', 'emergency'), default='routine')
     parser.add_argument('--seconds', type=float, default=None)
     parser.add_argument('--poll', type=float, default=None)
-    parser.add_argument('--speed', type=int, default=1)
+    parser.add_argument('--speed', type=int, default=3)
     parser.add_argument('--max-ticks', type=int, default=None)
     parser.add_argument('--stall-ticks', type=int, default=None)
     args = parser.parse_args()
