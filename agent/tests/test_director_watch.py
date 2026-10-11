@@ -14,8 +14,10 @@ class Game:
         self.resumed = False
         self.tick = 100
         self.calls = []
+        self.requests = []
     def rpc(self, url, method, params):
         self.calls.append(method)
+        self.requests.append((method, params))
         if method == 'game.speed':
             self.resumed, self.paused = True, False
             if self.options.get('fail_resume'): raise TimeoutError('resume timeout')
@@ -34,6 +36,8 @@ class Game:
             return [{'label': 'Food', 'priority': 'High'}] if self.resumed and self.options.get('event') else []
         if method == 'state.letters': return []
         if method == 'map.find':
+            if params['def'] == 'Fire':
+                return {'things': [{'id': 'Fire1'}] if self.resumed and self.options.get('fire') else []}
             built = self.options.get('precompleted') or (self.resumed and self.options.get('complete'))
             return {'count': 100, 'things': [{'id':'Bed1'}] if built else []}
         if method == 'state.stocks': return {'counted': {'WoodLog': 50}}
@@ -68,7 +72,7 @@ def test_precompleted_never_resumes(tmp_path):
     assert 'game.speed' not in game.calls
 
 @pytest.mark.parametrize('precompleted', [False, True])
-@pytest.mark.parametrize('mode', ['routine', 'emergency'])
+@pytest.mark.parametrize('mode', ['routine', 'maintenance', 'emergency'])
 def test_final_observation_must_still_be_paused(tmp_path, precompleted, mode):
     class ResumedDuringFinalRead(Game):
         def __init__(self):
@@ -135,7 +139,8 @@ def test_routine_runs_full_interval_despite_progress_and_normal_alerts(tmp_path)
     assert result['new_alerts'][0]['label'] == 'Food'
     assert game.calls.count('game.speed') == 1
     assert game.calls.count('game.pause') == 1
-    assert game.calls.count('map.find') == 2  # Baseline and final, never every safety poll.
+    assert sum(method == 'map.find' and params['def'] == 'Bed'
+               for method, params in game.requests) == 2  # Only baseline and final measure progress.
 
 def test_routine_default_does_not_stop_at_old_tick_limit(tmp_path):
     game = Game()
@@ -173,6 +178,47 @@ def test_emergency_mode_checks_each_second(tmp_path):
     with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
         result = watch.wait('http://localhost', tmp_path, GOAL, write=True, mode='emergency')
     assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 1
+    assert ('game.speed', {'speed': 1}) in game.requests
+
+
+@pytest.mark.parametrize('label', ['Needs tending', 'Breakdown'])
+def test_maintenance_batches_care_and_repairs_at_full_speed(tmp_path, label):
+    class Maintenance(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.alerts' and self.resumed:
+                return [{'label': label, 'priority': 'High'}]
+            return result
+    game = Maintenance()
+    clock = Clock(game)
+    with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
+        result = watch.wait('http://localhost', tmp_path, GOAL, write=True, mode='maintenance')
+    assert result['reason'] == 'maintenance_check' and result['paused']
+    assert result['elapsed_wall_seconds'] == 60
+    assert ('game.speed', {'speed': 3}) in game.requests
+    assert game.calls.count('game.pause') == 1
+    assert result['observed_events']['new_alerts'][0]['label'] == label
+
+
+@pytest.mark.parametrize('mode', ['routine', 'maintenance', 'emergency'])
+def test_small_fire_interrupts_every_mode(tmp_path, mode):
+    result = run(tmp_path, Game(fire=True), mode=mode, seconds=300, poll=2)
+    assert result['reason'] == 'danger' and result['paused']
+    assert result['summary']['fires'] == 1
+    assert result['elapsed_wall_seconds'] == 2
+
+
+@pytest.mark.parametrize('threat', ['hostile', 'downed'])
+def test_maintenance_does_not_delay_new_emergencies(tmp_path, threat):
+    class Threat(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary' and self.resumed:
+                result.update({'hostiles': [{'id': 'Raider'}]} if threat == 'hostile' else {'downed': 1})
+            return result
+    result = run(tmp_path, Threat(), mode='maintenance', seconds=60, poll=2)
+    assert result['reason'] == 'danger' and result['paused']
+    assert result['elapsed_wall_seconds'] == 2
 
 def test_routine_remembers_a_normal_alert_that_resolved_between_reviews(tmp_path):
     class Transient(Game):

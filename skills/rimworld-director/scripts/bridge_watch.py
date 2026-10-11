@@ -33,6 +33,10 @@ def observe(url, goal, *, measure_progress=True):
     letters = bridge.rpc(url, 'state.letters', {})
     if not isinstance(alerts, list) or any('error' in a for a in alerts):
         raise RuntimeError('Alert observation failed')
+    # Fire is an actual burning thing, unlike a campfire building. Do not
+    # wait for the game danger rating to rise before detecting a small fire.
+    fires = bridge.rpc(url, 'map.find', {'def': 'Fire', 'limit': 1})
+    summary = {**summary, 'fires': len(fires['things'])}
     value = None
     if measure_progress and goal['kind'] == 'building_count':
         found = bridge.rpc(url, 'map.find', {
@@ -47,7 +51,7 @@ def observe(url, goal, *, measure_progress=True):
     check_session(before, after)
     return {'status': after, 'value': value, 'alerts': alerts, 'letters': letters,
             'summary': {key: summary[key] for key in
-                        ('downed', 'hostiles', 'danger', 'food_days', 'key_stocks', 'blueprints', 'frames')
+                        ('downed', 'hostiles', 'fires', 'danger', 'food_days', 'key_stocks', 'blueprints', 'frames')
                         if key in summary}}
 
 
@@ -80,7 +84,7 @@ def changes(previous, current):
 def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
                acknowledged_hostiles=()):
     hostiles = current['summary'].get('hostiles', [])
-    if (current['summary'].get('downed', 0) or
+    if (current['summary'].get('fires', 0) or current['summary'].get('downed', 0) or
             any(h.get('id') not in acknowledged_hostiles for h in hostiles) or
             (current['summary'].get('danger') == 'High' and
              not any(h.get('id') in acknowledged_hostiles for h in hostiles))):
@@ -101,18 +105,19 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
     return None
 
 
-def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
+def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
          max_ticks=None, stall_ticks=None, mode='routine', acknowledged_hostiles=()):
     validate(goal)
-    if mode not in ('routine', 'emergency'):
-        raise ValueError('Mode must be routine or emergency')
+    if mode not in ('routine', 'maintenance', 'emergency'):
+        raise ValueError('Mode must be routine, maintenance or emergency')
     if (not isinstance(acknowledged_hostiles, (list, tuple)) or
             any(not isinstance(x, str) or not x.strip() for x in acknowledged_hostiles) or
             len(acknowledged_hostiles) > 50 or
             (acknowledged_hostiles and mode != 'emergency')):
         raise ValueError('Known hostile IDs require emergency mode, at most 50 nonempty IDs')
-    seconds = (300 if mode == 'routine' else 30) if seconds is None else seconds
-    poll = (2 if mode == 'routine' else 1) if poll is None else poll
+    seconds = {'routine': 300, 'maintenance': 60, 'emergency': 30}[mode] if seconds is None else seconds
+    poll = (1 if mode == 'emergency' else 2) if poll is None else poll
+    speed = (1 if mode == 'emergency' else 3) if speed is None else speed
     if not write:
         raise ValueError('Wait resumes/pauses the game and requires --write')
     if type(speed) is not int or speed not in (1, 2, 3):
@@ -146,7 +151,7 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
             while reason is None:
                 remaining = seconds - (time.monotonic() - started)
                 if remaining <= 0:
-                    reason = 'routine_check' if mode == 'routine' else 'timeout'
+                    reason = 'timeout' if mode == 'emergency' else f'{mode}_check'
                     break
                 time.sleep(min(poll, remaining))
                 sample = observe(url, goal, measure_progress=mode == 'emergency')
@@ -190,7 +195,7 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
                         raise RuntimeError('Game resumed during final observation; pause was not confirmed')
                     reason = reason_for(current, changes(baseline, current), goal, mode=mode,
                                         acknowledged_hostiles=acknowledged_hostiles) or reason
-                    if (reason == 'routine_check' and stall_ticks is not None and
+                    if (reason in ('routine_check', 'maintenance_check') and stall_ticks is not None and
                             current['value'] <= best and
                             current['status']['tick'] - last_progress >= stall_ticks):
                         reason = 'stalled'
@@ -218,11 +223,11 @@ def main():
     parser.add_argument('command', choices=('observe', 'wait'))
     parser.add_argument('--goal-file', type=Path, required=True)
     parser.add_argument('--write', action='store_true')
-    parser.add_argument('--mode', choices=('routine', 'emergency'), default='routine')
+    parser.add_argument('--mode', choices=('routine', 'maintenance', 'emergency'), default='routine')
     parser.add_argument('--acknowledge-hostile', action='append', default=[], metavar='ID')
     parser.add_argument('--seconds', type=float, default=None)
     parser.add_argument('--poll', type=float, default=None)
-    parser.add_argument('--speed', type=int, default=3)
+    parser.add_argument('--speed', type=int, default=None)
     parser.add_argument('--max-ticks', type=int, default=None)
     parser.add_argument('--stall-ticks', type=int, default=None)
     args = parser.parse_args()

@@ -29,11 +29,19 @@ Codex自身が判断し、RimBridgeのローカルHTTP経由で操作する。�
 
 「自律的に」「完成まで任せる」等の指示では、実行中のCodexが判断→操作→待機→検証を繰り返す。別LLMや常駐Runnerを起動しない。チャット終了後の動作は保証しない。
 
-### 平時と緊急時
+### 緊急度の3段階
+
+| 段階 | 対象 | 判断間隔と速度 |
+|---|---|---|
+| 緊急 `emergency` | 火事・敵・倒れた人・急変 | 即確認。対処中は1秒ごとに監視、既定は1倍速。戦闘は5〜10秒単位で判断 |
+| 対応待ち `maintenance` | 普通の治療・装置の故障・修理 | 担当と作業を設定し、実時間60秒ごとに確認。最高速度を維持 |
+| 平時 `routine` | 建築・研究・運搬など | 実時間300秒ごとに確認。最高速度を維持 |
+
+段階はCodexが観測に基づいて選び、`--mode` で指定する。軽傷や故障だけで緊急モードにしない。治療・修理は通常の仕事設定に任せ、毎回手動で作業を強制したり、全回復まで短い監視を繰り返したりしない。対応待ちが解消したら平時へ戻す。倒れた人・Critical警告・死亡などは対応待ちから緊急へ扱いを上げる。
 
 平時は `--mode routine`（既定）で300秒ごとにまとめて判断する。既定の進行速度は `--speed 3`（通常の最高速度）。監視と判断の間隔はゲーム内時間ではなく実時間で測る。この間、ゲームは進行を続け、Pythonだけで2秒ごとに安全監視する。作業待ち人数、普通の通知、目標の進捗では途中停止しない。完成判定と詳しい状態取得は開始・終了時に行い、終了時に停止してCodexが次の設定を考える。
 
-緊急時は `--mode emergency` で1秒ごとに確認し、目標達成・新しい警告・新しい通知でも停止する。既定の待機上限は30秒。両モードとも、敵・倒れた入植者・ゲームのHigh危険度・Critical警告・新たなThreatBig/ThreatSmall/Death通知・接続異常は即座に中断する。ゲームが人間に停止された場合も終了し、自動再開しない。検知はポーリングで、RPCの通信時間や観測間の短命イベントには限界がある。重大な警告を確認したら停止して評価する。緊急対応が人間から許可されている場合は、下記の手順で対応を設定して再開する。
+対応待ちは `--mode maintenance` で60秒進め、平時と同じく普通の警告や途中の目標達成では停止しない。安全監視は2秒ごと。緊急時は `--mode emergency` で1秒ごとに確認し、目標達成・新しい警告・新しい通知でも停止する。既定の待機上限は30秒、速度は1倍速。全モードとも、火事（実際のFireを検索。焚き火の建物は含まない）・敵・倒れた入植者・ゲームのHigh危険度・Critical警告・新たなThreatBig/ThreatSmall/Death通知・接続異常は検知時に中断する。ゲームが人間に停止された場合も終了し、自動再開しない。検知はポーリングで、RPCの通信時間や観測間の短命イベントには限界がある。重大な警告を確認したら停止して評価する。緊急対応が人間から許可されている場合は、下記の手順で対応を設定して再開する。
 
 1. 目標・操作範囲・完了条件を定める。既定上限は10待機サイクル、実時間15分（判断・操作時間も含む）。各サイクル前に残時間を確認し、最後の待機を残時間に収める。
 2. 通常の実行手順で停止・調査・操作を行う。手順7の直接再開を行わず、waitに再開と停止を任せる。既存警告も調査する。
@@ -50,10 +58,11 @@ Codex自身が判断し、RimBridgeのローカルHTTP経由で操作する。�
 ```powershell
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> observe --goal-file <repo>/runs/codex-goal.json
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode routine
+python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode maintenance
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode emergency
 ```
 
-5. paused:trueを確認する。completedなら用途を再検証して終了する。routine_check/timeout/game_time_limitなら進捗とまとめられたnew_alerts/worsened_alerts/new_lettersとobserved_eventsを読み、次の作業または待機を選ぶ。普通の警告をすべて緊急扱いにしない。明示した `--max-ticks` は両モードの早期上限、`--stall-ticks` は緊急時に早期判定、平時は300秒の判断時に判定する。既定では両制限を使わず、建築中に完成数が変わらないことだけで停滞と断定しない。
+5. paused:trueを確認する。completedなら用途を再検証して終了する。routine_check/maintenance_check/timeout/game_time_limitなら進捗とまとめられたnew_alerts/worsened_alerts/new_lettersとobserved_eventsを読み、次の作業または待機を選ぶ。普通の警告をすべて緊急扱いにしない。明示した `--max-ticks` は全モードの早期上限、`--stall-ticks` は緊急時に早期判定、それ以外は60秒／300秒の判断時に判定する。既定では両制限を使わず、建築中に完成数が変わらないことだけで停滞と断定しない。
 6. eventなら内容を読む。dangerなら停止した状態で緊急対応を判断する。game_paused/error/paused:falseは中止して報告する。goal_met:trueでも危険・エラーを優先する。終了・上限到達時は停止して成果・未達事項・警告を報告する。変更失敗を自動再送しない。
 
 警告・通知は開始時を基準に、新規・優先度上昇・解消を返す。既存警告はactive_alertsに残る。説明文だけの変化は悪化判定しない。通知はIDで重複を抑える。観測で確認した途中の変化はobserved_eventsに重複を抑えて残す（区切りまでに解消しても残す）。停止後の最終観測でも停止状態を検証する。
