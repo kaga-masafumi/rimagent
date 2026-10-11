@@ -31,7 +31,7 @@ Codex自身が判断し、RimBridgeのローカルHTTP経由で操作する。�
 
 ### 平時と緊急時
 
-平時は `--mode routine`（既定）で120秒ごとにまとめて判断する。この間、ゲームは進行を続け、Pythonだけで2秒ごとに安全監視する。作業待ち人数、普通の通知、目標の進捗では途中停止しない。完成判定と詳しい状態取得は開始・終了時に行い、終了時に停止してCodexが次の設定を考える。
+平時は `--mode routine`（既定）で300秒ごとにまとめて判断する。この間、ゲームは進行を続け、Pythonだけで2秒ごとに安全監視する。作業待ち人数、普通の通知、目標の進捗では途中停止しない。完成判定と詳しい状態取得は開始・終了時に行い、終了時に停止してCodexが次の設定を考える。
 
 緊急時は `--mode emergency` で1秒ごとに確認し、目標達成・新しい警告・新しい通知でも停止する。既定の待機上限は30秒。両モードとも、敵・倒れた入植者・ゲームのHigh危険度・Critical警告・新たなThreatBig/ThreatSmall/Death通知・接続異常は即座に中断する。ゲームが人間に停止された場合も終了し、自動再開しない。検知はポーリングで、RPCの通信時間や観測間の短命イベントには限界がある。重大な警告を確認したら、対処または人間の判断まで再開しない。
 
@@ -45,7 +45,7 @@ Codex自身が判断し、RimBridgeのローカルHTTP経由で操作する。�
 
 在庫例は `{"kind":"stock_count","def":"WoodLog","at_least":100}`。既存建物も数えるため「新しく1台」は既存数+1を指定する。完成数は割当・到達可能性・通電・使用可能性を保証しない。目的達成の報告前に必要な追加条件を通常RPCで検証する。在庫数は保管分であり全地面資材ではない。
 
-4. 観測・待機する。1回の待機は最大120秒。既存RPCの15秒タイムアウトにより、取得・停止を含む時間は指定時間を超え得る。コントローラーロックは待機終了まで保持する。Codexのツール呼出はバックグラウンド実行にして60秒以内に進捗を伝え、120秒のブロッキング待機をしない。
+4. 観測・待機する。1回の待機は最大300秒。既存RPCの15秒タイムアウトにより、取得・停止を含む時間は指定時間を超え得る。コントローラーロックは待機終了まで保持する。Codexのツール呼出はバックグラウンド実行にして60秒以内に進捗を伝え、300秒のブロッキング待機をしない。
 
 ```powershell
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> observe --goal-file <repo>/runs/codex-goal.json
@@ -53,7 +53,7 @@ python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>
 python <skill-dir>/scripts/bridge_watch.py --repo <repo> wait --goal-file <repo>/runs/codex-goal.json --write --mode emergency
 ```
 
-5. paused:trueを確認する。completedなら用途を再検証して終了する。routine_check/timeout/game_time_limitなら進捗とまとめられたnew_alerts/worsened_alerts/new_lettersとobserved_eventsを読み、次の作業または待機を選ぶ。普通の警告をすべて緊急扱いにしない。明示した `--max-ticks` は両モードの早期上限、`--stall-ticks` は緊急時に早期判定、平時は120秒の判断時に判定する。既定では両制限を使わず、建築中に完成数が変わらないことだけで停滞と断定しない。
+5. paused:trueを確認する。completedなら用途を再検証して終了する。routine_check/timeout/game_time_limitなら進捗とまとめられたnew_alerts/worsened_alerts/new_lettersとobserved_eventsを読み、次の作業または待機を選ぶ。普通の警告をすべて緊急扱いにしない。明示した `--max-ticks` は両モードの早期上限、`--stall-ticks` は緊急時に早期判定、平時は300秒の判断時に判定する。既定では両制限を使わず、建築中に完成数が変わらないことだけで停滞と断定しない。
 6. eventなら内容を読む。danger/game_paused/error/paused:falseなら中止し報告する。goal_met:trueでも危険・エラーを優先する。終了・上限到達時は停止して成果・未達事項・警告を報告する。変更失敗を自動再送しない。
 
 警告・通知は開始時を基準に、新規・優先度上昇・解消を返す。既存警告はactive_alertsに残る。説明文だけの変化は悪化判定しない。通知はIDで重複を抑える。観測で確認した途中の変化はobserved_eventsに重複を抑えて残す（区切りまでに解消しても残す）。停止後の最終観測でも停止状態を検証する。

@@ -98,14 +98,14 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=1,
     validate(goal)
     if mode not in ('routine', 'emergency'):
         raise ValueError('Mode must be routine or emergency')
-    seconds = (120 if mode == 'routine' else 30) if seconds is None else seconds
+    seconds = (300 if mode == 'routine' else 30) if seconds is None else seconds
     poll = (2 if mode == 'routine' else 1) if poll is None else poll
     if not write:
         raise ValueError('Wait resumes/pauses the game and requires --write')
     if type(speed) is not int or speed not in (1, 2, 3):
         raise ValueError('Only ordinary speeds 1..3 are allowed')
-    if not all(math.isfinite(x) for x in (seconds, poll)) or not 0 < poll <= seconds <= 120:
-        raise ValueError('Require 0 < poll <= seconds <= 120')
+    if not all(math.isfinite(x) for x in (seconds, poll)) or not 0 < poll <= seconds <= 300:
+        raise ValueError('Require 0 < poll <= seconds <= 300')
     if any(x is not None and (type(x) is not int or x < 1) for x in (max_ticks, stall_ticks)):
         raise ValueError('Tick limits must be positive integers')
     # Hold the same controller lock for the entire resume/observe/pause interval.

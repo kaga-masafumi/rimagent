@@ -106,7 +106,7 @@ def test_lock_blocks_all_calls(tmp_path):
         with pytest.raises(RuntimeError,match='active'): watch.wait('http://localhost',tmp_path,GOAL,write=True)
         rpc.assert_not_called()
 
-@pytest.mark.parametrize('kwargs',[{'write':False},{'write':True,'seconds':121},{'write':True,'speed':4},{'write':True,'poll':0},{'write':True,'seconds':float('nan')}])
+@pytest.mark.parametrize('kwargs',[{'write':False},{'write':True,'seconds':301},{'write':True,'speed':4},{'write':True,'poll':0},{'write':True,'seconds':float('nan')}])
 def test_invalid_options_do_not_contact_game(tmp_path,kwargs):
     with patch.object(watch.bridge,'rpc') as rpc:
         with pytest.raises(ValueError): watch.wait('http://localhost',tmp_path,GOAL,**kwargs)
@@ -128,10 +128,10 @@ def test_filtered_count_and_stock():
 
 def test_routine_runs_full_interval_despite_progress_and_normal_alerts(tmp_path):
     game = Game(complete=True, event=True)
-    result = run(tmp_path, game, mode='routine', seconds=120, poll=2)
+    result = run(tmp_path, game, mode='routine', seconds=300, poll=2)
     assert result['reason'] == 'completed'
     assert result['goal_met'] and result['paused']
-    assert result['elapsed_wall_seconds'] == 120
+    assert result['elapsed_wall_seconds'] == 300
     assert result['new_alerts'][0]['label'] == 'Food'
     assert game.calls.count('game.speed') == 1
     assert game.calls.count('game.pause') == 1
@@ -143,8 +143,8 @@ def test_routine_default_does_not_stop_at_old_tick_limit(tmp_path):
     with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):
         result = watch.wait('http://localhost', tmp_path, GOAL, write=True)
     assert result['reason'] == 'routine_check'
-    assert result['elapsed_wall_seconds'] == 120
-    assert result['elapsed_game_ticks'] == 6000
+    assert result['elapsed_wall_seconds'] == 300
+    assert result['elapsed_game_ticks'] == 15000
 
 @pytest.mark.parametrize('threat', ['hostile', 'critical', 'letter', 'high_danger'])
 def test_routine_interrupts_for_emergencies(tmp_path, threat):
@@ -158,7 +158,7 @@ def test_routine_interrupts_for_emergencies(tmp_path, threat):
                 if method == 'state.letters' and threat == 'letter': result = [{'id':1,'def':'ThreatBig'}]
             return result
     game = Threat()
-    result = run(tmp_path, game, mode='routine', seconds=120, poll=2)
+    result = run(tmp_path, game, mode='routine', seconds=300, poll=2)
     assert result['reason'] == 'danger' and result['paused']
     assert result['elapsed_wall_seconds'] == 2
 
