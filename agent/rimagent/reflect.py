@@ -87,7 +87,7 @@ def episode(ctx: Context, events: list[dict[str, Any]], step_notes: list[str], r
         scores=scorecard.history_text(12),
         skills_index=skills.index_text(),
     )
-    res = think(ctx, prompt, situation_hint="reflection lessons " + reason, max_calls=30, tool_groups={"brain", "knowledge", "meta"}, trigger="episode reflection")
+    res = think(ctx.fork("reflection"), prompt, situation_hint="reflection lessons " + reason, max_calls=30, tool_groups={"brain", "knowledge", "meta"}, trigger="episode reflection")
     return res.notes
 
 

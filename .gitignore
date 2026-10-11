@@ -16,6 +16,11 @@ sft/
 .DS_Store
 config.local.yaml
 mod/ledger.jsonl
+mod-steward/1.6/Assemblies/
+mod-steward/Source/obj/
+mod-steward/Source/bin/
+mod-steward/Tests/obj/
+mod-steward/Tests/bin/
 runs/
 docs/*.tmp
 CLAUDE.md

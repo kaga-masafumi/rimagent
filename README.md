@@ -1,5 +1,10 @@
 # rimagent
 
+Windows 11 setup, OpenAI/Qwen switching, and persistent cost limits are documented in
+[Windows / LLM / budget guide](docs/WINDOWS_LLM.md). Watchdog source editing is disabled by default.
+Copy [config.openai.example.yaml](config.openai.example.yaml) to `config.local.yaml` to select OpenAI;
+legacy Qwen configuration continues to work without a provider key.
+
 **An LLM that plays RimWorld and rewrites its own playbook between colonies.**
 
 A local model (tested with Qwen 3 27–32B on vLLM) runs a RimWorld colony through a mod that exposes the whole engine over HTTP. It sees the world as objects, trends and diffs rather than pixels or grids, controls the game with the same verbs a player has (right-click orders, gizmos, designators, blueprints, zones, dialogs, trade), and keeps everything it learns on disk: **skills** (markdown), **tools** and **watchers** (Python, hot-loaded), a journal, and a score per episode. Every colony ends in a reflection that edits those files and commits them. Then it starts the next one.

@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import io
+import os
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
 
 def _font(size: int):
-    for name in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/System/Library/Fonts/Helvetica.ttc", "/Library/Fonts/Arial.ttf"):
+    win_fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    for name in (str(win_fonts / "arialbd.ttf"), str(win_fonts / "arial.ttf"), str(win_fonts / "meiryo.ttc"),
+                 "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/System/Library/Fonts/Helvetica.ttc", "/Library/Fonts/Arial.ttf"):
         try:
             return ImageFont.truetype(name, size)
         except Exception:  # noqa: BLE001

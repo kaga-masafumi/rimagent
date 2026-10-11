@@ -19,6 +19,8 @@ Every event is {"seq": int, "t": epoch seconds, "kind": str, "data": dict}. Kind
   reply         data: {"text": str}                         the agent's reply_to_operator
   log           data: {"text": str, ...}
   error         data: {"text": str}
+  usage         data: {id, provider?, model?, meta?, status, usage?, cost_usd?, request_id?, error?} per API attempt
+  budget        data: {held: bool, reason: str} persistent hold / explicit operator resume
 """
 from __future__ import annotations
 

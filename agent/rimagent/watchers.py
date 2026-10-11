@@ -6,6 +6,7 @@ import traceback
 from typing import Any
 
 from .context import Context
+from .usage import LLMBlocked
 
 _pool = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="watcher")
 
@@ -51,6 +52,12 @@ def run_all(ctx: Context, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     reg = ctx.registry
     alerts: list[dict[str, Any]] = []
     for name, fn in list(reg.watchers.items()):
+        try:
+            check = getattr(ctx, "execution_check", None)
+            if check:
+                check()
+        except LLMBlocked:
+            return alerts
         if name + ".py" in reg.watcher_errors or name in getattr(reg, "watcher_superseded", {}):
             continue
         fut = _pool.submit(fn, ctx, events)

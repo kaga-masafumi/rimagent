@@ -1,0 +1,16 @@
+# Copy to config.local.yaml; do not put secrets here. Restart the agent after changing settings.
+llm:
+  provider: openai
+  model: gpt-5.6-luna
+  api_key_env: OPENAI_API_KEY
+  reasoning_effort: low
+  max_tokens: 4000
+  max_streams: 1
+  timeout_s: 240
+budget:
+  daily_usd: 1
+  monthly_usd: 10
+watchdog:
+  enabled: false
+play:
+  parallel: false

@@ -117,7 +117,8 @@ def distill_one(llm, name: str, titles: list[str], focus: str, log: Callable[[st
         {"role": "system", "content": "You distil RimWorld wiki pages into short, concrete playbooks for an autonomous agent."},
         {"role": "user", "content": f"Skill name: {name}\nFocus: {focus}\n\n{_FORMAT_RULES}\n\nWIKI PAGES:\n\n{pages}"},
     ]
-    reply = llm.chat(messages, thinking=False, max_tokens=max_tokens)
+    reply = llm.chat(messages, thinking=False, max_tokens=max_tokens,
+                     meta={"stream": "distill", "skill": name, "attempt": 1})
     body = (reply.content or "").strip()
     # strip an accidental fenced block or frontmatter
     body = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", body).strip()

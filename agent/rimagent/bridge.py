@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from typing import Any
 
 import httpx
@@ -17,9 +18,14 @@ class Bridge:
     def __init__(self, url: str | None = None, timeout: float = 60.0):
         self.url = (url or CONFIG["bridge"]["url"]).rstrip("/")
         self._client = httpx.Client(base_url=self.url, timeout=timeout)
+        self.operation_guard = None  # optional Python-side execution policy; RPCs stay unchanged
 
     # ---- low level ----
     def call(self, method: str, timeout_ms: int | None = None, **params: Any) -> Any:
+        with self.operation_guard(method, params) if self.operation_guard else nullcontext():
+            return self._call(method, timeout_ms, **params)
+
+    def _call(self, method: str, timeout_ms: int | None = None, **params: Any) -> Any:
         payload: dict[str, Any] = {"method": method, "params": params}
         if timeout_ms:
             payload["timeout_ms"] = timeout_ms
@@ -38,8 +44,9 @@ class Bridge:
     def call_raw(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Return the raw envelope (ok/result/error) without raising."""
         try:
-            r = self._client.post("/rpc", json={"method": method, "params": params or {}}, timeout=95)
-            return r.json()
+            with self.operation_guard(method, params or {}) if self.operation_guard else nullcontext():
+                r = self._client.post("/rpc", json={"method": method, "params": params or {}}, timeout=95)
+                return r.json()
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"bridge unreachable: {e}"}
 

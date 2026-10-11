@@ -131,6 +131,16 @@ def create_app(bus: Any, bridge: Any, controls: Any) -> FastAPI:
         ctl = {"paused": bool(getattr(controls, "paused", False)), "no_pause": getattr(controls, "no_pause", None), "sandbox": bool(getattr(controls, "sandbox", False)), "parallel": bool(getattr(controls, "parallel", False)), "steward": getattr(controls, "steward", None), "orders_off": getattr(controls, "orders_off", None)}
         return {"bus": bus.state, "last_seq": bus.last_seq, "game": game, "controls": ctl}
 
+    @app.get("/api/usage")
+    def api_usage() -> dict[str, Any]:
+        fn = getattr(controls, "usage_snapshot", None)
+        if not callable(fn):
+            return {"available": False}
+        try:
+            return {"available": True, **fn()}
+        except Exception as exc:
+            return JSONResponse({"available": False, "error": str(exc)}, status_code=503)
+
     @app.get("/api/brain/tree")
     def api_brain_tree() -> dict[str, Any]:
         try:
@@ -528,11 +538,18 @@ footer .r{margin-left:auto}
   <button data-tab="base">Base</button>
   <button data-tab="steward">Steward</button>
   <button data-tab="watchdog">Watchdog</button>
+  <button data-tab="usage">Usage / Cost<span class="cnt" id="budget-warning"></span></button>
   <button data-tab="map">Map</button>
   <button data-tab="ascii">ASCII</button>
 </nav>
 
 <main>
+  <section class="tab col" id="tab-usage">
+    <div class="toolbar"><strong>API usage and estimated cost</strong><span class="dim">USD · Asia/Tokyo · actual provider billing may differ</span></div>
+    <div id="usage-summary" style="padding:12px"></div>
+    <div class="toolbar"><button onclick="control('resume').then(loadUsage)">Resume after fixing the hold</button><span class="dim">Outstanding usage must be reconciled first. Limits are read at agent restart.</span></div>
+    <div id="usage-requests" class="scroll" style="padding:12px"></div>
+  </section>
   <section class="tab active col" id="tab-live">
     <div class="toolbar">
       <span class="dim">Think steps · newest first · streams:</span>
@@ -704,6 +721,7 @@ tabsEl.addEventListener('click', e => {
   if (b.dataset.tab === 'map' && !mapLoaded) loadMap();
   if (b.dataset.tab === 'steward') loadSteward();
   if (b.dataset.tab === 'watchdog') loadWatchdog();
+  if (b.dataset.tab === 'usage') loadUsage();
   if (b.dataset.tab === 'live') scrollBottom($('live'), true);
   if (b.dataset.tab === 'ledger') scrollBottom($('ledger'), true);
 });
@@ -1188,12 +1206,33 @@ async function loadOverview() {
 setInterval(() => { if ($('c-ascii-auto').checked && $('tab-ascii').classList.contains('active')) loadAscii(); }, 15000);
 document.querySelector('#tabs button[data-tab="ascii"]').addEventListener('click', () => { if (!$('ascii-grid').innerHTML) loadAscii(); });
 
+// ---------- API usage ----------
+async function loadUsage() {
+  try {
+    const res = await fetch('/api/usage'), j = await res.json();
+    if (!res.ok) throw new Error(j.error || 'Usage ledger unavailable');
+    if (!j.available) { $('usage-summary').textContent = 'Usage ledger unavailable in this session.'; return; }
+    $('budget-warning').textContent = j.hold_reason ? 'HELD' : j.warning_percent ? `${j.warning_percent}%` : '';
+    const usd = x => '$' + Number(x || 0).toFixed(6);
+    const totals = j.totals || {};
+    $('usage-summary').innerHTML = `<p>${esc(j.provider || '')} / ${esc(j.model || '')} · ${j.price ? 'priced' : 'price not configured'}</p>`
+      + `<p>Today (${esc(j.day)}): ${usd(j.daily_usd)} / ${usd(j.daily_limit_usd)} · Month (${esc(j.month)}): ${usd(j.monthly_usd)} / ${usd(j.monthly_limit_usd)}</p>`
+      + `<p>Outstanding reservations: ${usd(j.reserved_usd)} · All recorded tokens: input ${totals.input_tokens || 0}, cached ${totals.cached_tokens || 0}, output ${totals.output_tokens || 0} (including ${totals.reasoning_tokens || 0} reasoning)</p>`
+      + (j.hold_reason ? `<p style="color:var(--warn)"><strong>Game held:</strong> ${esc(j.hold_reason)}</p>` : '<p>Budget active.</p>')
+      + (j.outstanding || []).map(r => `<p>Outstanding ${esc(r.id)}: ${esc(r.status)} · ${usd(r.reserved_usd)}</p>`).join('');
+    $('usage-requests').innerHTML = '<table><thead><tr><th>Request / time</th><th>Model / stream</th><th>Status</th><th>Tokens in / out</th><th>Estimated USD</th></tr></thead><tbody>'
+      + (j.requests || []).map(r => `<tr><td>${esc(r.id)}<br>${esc(new Date(r.sent_at * 1000).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'}))}</td><td>${esc(r.model)}<br>${esc((r.meta || {}).stream || '')}</td><td>${esc(r.status)}</td><td>${r.usage ? `${r.usage.input_tokens} / ${r.usage.output_tokens}` : 'unknown'}</td><td>${r.cost_usd == null ? 'unpriced / unknown' : usd(r.cost_usd)}</td></tr>`).join('') + '</tbody></table>';
+  } catch (e) { $('usage-summary').textContent = 'Usage error: ' + e.message; $('budget-warning').textContent = 'ERROR'; }
+}
+
 // ---------- event dispatch ----------
 function handle(ev) {
   const d = ev.data || {}, t = ev.t;
   nEvents++; lastSeq = Math.max(lastSeq, ev.seq);
   switch (ev.kind) {
     case 'status': Object.assign(state, d); state._t = t; renderStatus(); if (typeof d.steward === 'boolean' && $('c-steward')) $('c-steward').checked = d.steward; break;
+    case 'usage': if ($('tab-usage').classList.contains('active')) loadUsage(); break;
+    case 'budget': $('budget-warning').textContent = d.held ? 'HELD' : ''; loadUsage(); break;
     case 'think_start': newStep(d, t); break;
     case 'reasoning': useStream(d); ensureStep(t); liveAppend(itemReasoning(d)); break;
     case 'assistant': useStream(d); ensureStep(t); liveAppend(itemAssistant(d)); break;
@@ -1219,6 +1258,7 @@ function setConn(on, txt) { $('conn').classList.toggle('on', on); $('conn-txt').
 
 async function hydrate() {
   await pollState();
+  await loadUsage();
   try {
     const evs = await (await fetch('/api/events?since=0&limit=2000')).json();
     for (const e of evs) handle(e);
@@ -1235,6 +1275,7 @@ function connect() {
 }
 hydrate();
 setInterval(pollState, 10000);
+setInterval(loadUsage, 10000);
 </script>
 </body>
 </html>

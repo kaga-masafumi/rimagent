@@ -100,10 +100,42 @@ def cmd_export_sft(args):
 
 def cmd_llm(args):
     from .llm import LLM
-    r = LLM().chat([{"role": "user", "content": args.prompt}], thinking=not args.no_thinking, max_tokens=400)
+    r = LLM(CONFIG).chat([{"role": "user", "content": args.prompt}], thinking=not args.no_thinking, max_tokens=400,
+                         meta={"stream": "cli", "attempt": 1})
     print("reasoning:", r.reasoning[:500])
     print("content:", r.content)
     print("usage:", r.usage, "elapsed:", round(r.elapsed, 1))
+
+
+def cmd_doctor(args):
+    """Configuration-only preflight: no game launch, RPC mutation, or paid API request."""
+    from .llm import validate_configuration
+    from .paths import ROOT, RUNS
+    from .usage import UsageLedger
+    summary = validate_configuration(CONFIG)
+    summary["watchdog"] = "enabled" if CONFIG.get("watchdog", {}).get("enabled", False) else "disabled"
+    if args.require_watchdog_off and summary["watchdog"] != "disabled":
+        raise ValueError("Windows startup requires watchdog.enabled: false")
+    summary["bridge_source"] = "present" if (ROOT / "mod/Source/RimBridge.csproj").exists() else "missing: git submodule update --init"
+    summary["budget"] = UsageLedger(RUNS / "usage.sqlite3", CONFIG.get("budget")).snapshot()
+    summary["bridge_url"] = CONFIG["bridge"]["url"]
+    summary["dashboard_url"] = f"http://127.0.0.1:{CONFIG.get('dashboard', {}).get('port', 8770)}"
+    if args.require_budget_active and summary["budget"]["hold_reason"]:
+        raise ValueError(summary["budget"]["hold_reason"])
+    if args.require_budget_active and summary["price"] == "configured" and summary["budget"]["warning_percent"] == 100:
+        raise ValueError("Budget has no remaining headroom; repair limits or outstanding requests before starting")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def cmd_usage(args):
+    from .paths import RUNS
+    from .usage import UsageLedger
+    ledger = UsageLedger(RUNS / "usage.sqlite3", CONFIG.get("budget"))
+    if args.resolve:
+        ledger.reconcile(args.resolve, args.cost_usd)
+    if args.resume:
+        ledger.resume()
+    print(json.dumps(ledger.snapshot(), ensure_ascii=False, indent=2))
 
 
 def main(argv=None):
@@ -138,8 +170,22 @@ def main(argv=None):
     l.add_argument("prompt")
     l.add_argument("--no-thinking", action="store_true")
     l.set_defaults(fn=cmd_llm)
+    d = sub.add_parser("doctor", help="check local configuration without calling the LLM or launching the game")
+    d.add_argument("--require-watchdog-off", action="store_true")
+    d.add_argument("--require-budget-active", action="store_true")
+    d.set_defaults(fn=cmd_doctor)
+    u = sub.add_parser("usage", help="inspect the usage ledger; stop the runner before reconciling requests")
+    u.add_argument("--resolve", metavar="REQUEST_ID", help="reconcile an outstanding request; defaults to charging its full reservation")
+    u.add_argument("--cost-usd", help="verified cost for --resolve, e.g. 0 for a confirmed unbilled request")
+    u.add_argument("--resume", action="store_true", help="explicitly clear a repaired hold without launching the game")
+    u.set_defaults(fn=cmd_usage)
     args = ap.parse_args(argv)
-    args.fn(args)
+    if getattr(args, "cost_usd", None) is not None and not getattr(args, "resolve", None):
+        ap.error("--cost-usd requires --resolve")
+    try:
+        args.fn(args)
+    except (ValueError, RuntimeError) as exc:
+        ap.exit(1, f"rimagent: {exc}\n")
 
 
 if __name__ == "__main__":

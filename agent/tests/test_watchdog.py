@@ -98,7 +98,12 @@ def test_allowlist_rejects_symlink_escape(repo):
     link = repo / "mod" / "Source" / "escape.cs"
     if link.exists() or link.is_symlink():
         link.unlink()
-    os.symlink(outside, link)
+    try:
+        os.symlink(outside, link)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink privilege unavailable; run on a Developer Mode or privileged host to exercise this guard")
+        raise
     try:
         with pytest.raises(wd.WatchdogError):
             wd.safe_path("mod/Source/escape.cs")

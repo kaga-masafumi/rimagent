@@ -23,14 +23,14 @@ DEFAULTS = [
 def _load() -> dict[str, Any]:
     if WATCH_FILE.exists():
         try:
-            return json.loads(WATCH_FILE.read_text())
+            return json.loads(WATCH_FILE.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             pass
     return {"watch": list(DEFAULTS), "history": {}}
 
 
 def _save(d: dict[str, Any]) -> None:
-    WATCH_FILE.write_text(json.dumps(d, indent=1))
+    WATCH_FILE.write_text(json.dumps(d, indent=1), encoding="utf-8")
 
 
 def reset() -> None:

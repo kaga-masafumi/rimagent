@@ -40,7 +40,7 @@ def load_all() -> list[Skill]:
     out = []
     for p in sorted(SKILLS.glob("*.md")):
         try:
-            post = frontmatter.load(p)
+            post = frontmatter.loads(p.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
         out.append(Skill(

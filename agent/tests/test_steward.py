@@ -167,7 +167,7 @@ def test_config_defaults_and_repo_yaml_have_steward_section():
     st = cfg["steward"]
     assert st["enabled"] is True and st["scorer"] is True and st["stock"] is True
     assert st["research_queue_default"] == []
-    assert st["orders"] == {"enabled": True, "off": []}
+    assert st["orders"] == {"enabled": True, "off": [], "superseded_watchers": None}
     assert False not in st["orders"]   # the yaml key is quoted: a bare `off` parses as boolean False
     assert "steward" in cfg["play"]["wake_on_kinds"] and "orders" in cfg["play"]["wake_on_kinds"]
     assert "steward" not in cfg["play"].get("critical_kinds", []) and "orders" not in cfg["play"].get("critical_kinds", [])
@@ -306,7 +306,7 @@ def test_roles_standing_orders_allow_lists():
 
 
 def test_system_prompt_has_standing_orders_paragraph():
-    text = (Path(__file__).resolve().parents[1] / "rimagent" / "prompts" / "system.md").read_text()
+    text = (Path(__file__).resolve().parents[1] / "rimagent" / "prompts" / "system.md").read_text(encoding="utf-8")
     para = next(l for l in text.splitlines() if l.startswith("- Standing orders:"))
     for needle in ("rw_steward_orders_rally", "rw_steward_orders_set", "combat", "rescue", "unforbid", "corpses", "beds", "policies", "blueprints", "fire", "first walls", "Manual actions pause the matching order"):
         assert needle in para, needle
@@ -383,7 +383,7 @@ def test_runner_applies_orders_config_after_steward_enable():
     assert r3.apply_orders() is None and any(k == "error" and "steward.orders.set failed" in d["text"] for k, d in r3.bus.events)
     assert r3.orders_supported is False and r3.registry.watcher_superseded == {}
     # the orders ledger kind is a wake kind, never an interrupt
-    assert "critical_kinds.discard(\"orders\")" in (Path(__file__).resolve().parents[1] / "rimagent" / "runner.py").read_text()
+    assert "critical_kinds.discard(\"orders\")" in (Path(__file__).resolve().parents[1] / "rimagent" / "runner.py").read_text(encoding="utf-8")
 
 
 def test_runner_order_toggle_and_rally():

@@ -16,6 +16,7 @@ from .context import Context
 from .llm import LLM
 from .loop import ORDER_IDS, situation_packet, think
 from .paths import ROOT, RUNS
+from .usage import LLMBlocked
 
 EPISODE_FILE = RUNS / "episode.json"
 
@@ -23,7 +24,7 @@ EPISODE_FILE = RUNS / "episode.json"
 def _save_episode(d: dict) -> None:
     try:
         import json
-        EPISODE_FILE.write_text(json.dumps(d))
+        EPISODE_FILE.write_text(json.dumps(d), encoding="utf-8")
     except Exception:  # noqa: BLE001
         pass
 
@@ -31,7 +32,7 @@ def _save_episode(d: dict) -> None:
 def _load_episode() -> dict:
     try:
         import json
-        return json.loads(EPISODE_FILE.read_text()) if EPISODE_FILE.exists() else {}
+        return json.loads(EPISODE_FILE.read_text(encoding="utf-8")) if EPISODE_FILE.exists() else {}
     except Exception:  # noqa: BLE001
         return {}
 from .registry import Registry
@@ -58,11 +59,19 @@ class Controls:
         self.r.bus.emit("log", {"text": "agent paused by operator"})
 
     def resume(self):
+        if self.r.budget_reason():
+            self.r.llm.ledger.resume()
+            self.r._budget_hold = ""
+            self.r.force_think = "operator resumed after budget hold"
         self.paused = False
         self.r.bus.emit("log", {"text": "agent resumed by operator"})
 
     def think_now(self):
         self.r.force_think = "operator"
+
+    def usage_snapshot(self):
+        return {**self.r.llm.ledger.snapshot(), "provider": self.r.llm.provider.name, "model": self.r.llm.model,
+                "price": self.r.llm.price.to_dict() if self.r.llm.price else None}
 
     def end_episode(self):
         self.r.force_end = "operator ended the episode"
@@ -126,11 +135,16 @@ class Runner:
         self.cfg = cfg
         self.bus = bus or BUS
         self.bridge = Bridge(cfg["bridge"]["url"])
-        self.llm = LLM()
+        self._budget_hold = ""
+        self.llm = LLM(cfg, emit=self.bus.emit, on_hold=self._on_llm_hold)
+        self.bridge.operation_guard = self.llm.ledger.action_guard
         self.registry = Registry()
-        for mod in (knowledge_tools, brain_tools, meta_tools, watchdog_tools):
+        for mod in (knowledge_tools, brain_tools, meta_tools):
             self.registry.add_module(mod)
+        if (cfg.get("watchdog") or {}).get("enabled", False):
+            self.registry.add_module(watchdog_tools)
         self.ctx = Context(bridge=self.bridge, llm=self.llm, registry=self.registry, config=cfg, emit=self.bus.emit)
+        self.ctx.execution_check = self.llm.ensure_active
         self.controls = Controls(self)
         self.stop = False
         self.force_think: str | None = None
@@ -177,6 +191,38 @@ class Runner:
         self.critical_kinds.discard("orders")    # standing-order events (combat engaged/released, rescue, corpses, fire) too: the runner already wakes on danger
 
     # ---------- lifecycle ----------
+    def budget_reason(self) -> str:
+        ledger = getattr(getattr(self, "llm", None), "ledger", None)
+        if ledger is None:
+            return getattr(self, "_budget_hold", "")
+        try:
+            return ledger.hold_reason
+        except LLMBlocked as exc:
+            return str(exc)
+
+    def _on_llm_hold(self, reason: str) -> None:
+        changed = reason != getattr(self, "_budget_hold", "")
+        self._budget_hold = reason
+        if hasattr(self, "controls"):
+            self.controls.paused = True
+        try:
+            self.bridge.call("game.pause", paused=True)
+        except (BridgeError, LLMBlocked):
+            pass  # run/recover will keep enforcing the hold when the bridge returns
+        if changed:
+            self.bus.emit("status", {"phase": "budget_hold", "budget_hold": reason})
+
+    def _budget_held(self) -> bool:
+        return bool(self.budget_reason())
+
+    def _wait_budget(self) -> bool:
+        reason = self.budget_reason()
+        if not reason:
+            return False
+        self._on_llm_hold(reason)
+        time.sleep(1)
+        return True
+
     def run(self) -> None:
         self.bus.emit("log", {"text": "runner starting"})
         self.bridge.wait_alive()
@@ -185,8 +231,12 @@ class Runner:
         self.bus.emit("log", {"text": f"{len(self.registry.tools)} tools registered ({sum(1 for t in self.registry.tools.values() if t.source == 'bridge')} bridge)"})
         while not self.stop:
             try:
+                if self._wait_budget():
+                    continue
                 self.ensure_game()
                 self.play_until_episode_end()
+            except LLMBlocked as exc:
+                self._on_llm_hold(str(exc))
             except BridgeError as e:
                 self.bus.emit("error", {"text": f"bridge: {e}"})
                 self.recover_game()
@@ -197,6 +247,8 @@ class Runner:
         self.bus.emit("log", {"text": "runner stopped"})
 
     def ensure_game(self) -> None:
+        if self._budget_held():
+            return
         st = self.bridge.status()
         if st.get("state") == "playing":
             if not self.seed:
@@ -232,6 +284,8 @@ class Runner:
         self.new_game()
 
     def new_game(self) -> None:
+        if self._budget_held():
+            return
         play = self.cfg["play"]
         seeds = play.get("seeds") or ["rimagent-1"]
         self.episode += 1
@@ -260,18 +314,23 @@ class Runner:
 
     def recover_game(self) -> None:
         """Bridge went away: wait, or relaunch the game if configured."""
+        if self._budget_held():
+            self._on_llm_hold(self.budget_reason())
+            return
         self.bus.emit("status", {"phase": "loading"})
         for _ in range(20):
-            if self.stop:
+            if self.stop or self._budget_held():
                 return
             if self.bridge.health():
                 return
             time.sleep(3)
+        if self.stop or self._budget_held():
+            return
         if self.cfg["play"].get("auto_restart_game", True):
             script = ROOT / "script" / ("restart-game.ps1" if os.name == "nt" else "restart-game.sh")
             cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)] if os.name == "nt" else [str(script)]
             self.bus.emit("log", {"text": f"game unreachable for 60s; relaunching via script/{script.name}"})
-            subprocess.run(cmd, timeout=60)
+            subprocess.run(cmd, timeout=60, check=True)
             self.bridge.wait_alive(600)
             self.registry.add_bridge_methods(self.bridge.methods())
             # prefer the autosave of the current episode
@@ -286,10 +345,14 @@ class Runner:
 
     # ---------- main loop ----------
     def play_until_episode_end(self) -> None:
+        if self._budget_held():
+            return
         play = self.cfg["play"]
         self.bridge.call("game.speed", speed=int(play.get("speed", 3)))
         self.next_wake_tick = 0
         while not self.stop:
+            if self._wait_budget():
+                continue
             st = self.bridge.status()
             self._last_alive = time.time()
             if st.get("state") != "playing":
@@ -351,7 +414,7 @@ class Runner:
         if time.time() - self._status_at < 1.0:
             return
         self._status_at = time.time()
-        self.bus.emit("status", {**st, "episode": self.episode, "seed": self.seed, "phase": "thinking" if self.thinking else "playing", "deaths": self.deaths, "raids": self.raids, "next_wake_tick": self.next_wake_tick, "steward": self.steward})
+        self.bus.emit("status", {**st, "episode": self.episode, "seed": self.seed, "phase": "budget_hold" if self._budget_held() else "thinking" if self.thinking else "playing", "budget_hold": self.budget_reason(), "deaths": self.deaths, "raids": self.raids, "next_wake_tick": self.next_wake_tick, "steward": self.steward})
 
     def poll_events(self) -> list[dict[str, Any]]:
         data = self.bridge.events(self.ctx.last_seq, 500)
@@ -444,6 +507,9 @@ class Runner:
         return any(k in t for k in self.critical_kinds)
 
     def with_pause(self, fn, urgent: bool = False) -> None:
+        if self._budget_held():
+            self._on_llm_hold(self.budget_reason())
+            return
         # Calm steps think at think_speed (default: full play speed); urgent ones at danger_think_speed (default: paused).
         play = self.cfg["play"]
         think_speed = int(play.get("danger_think_speed", 0)) if urgent else int(play.get("think_speed", play.get("speed", 3)))
@@ -462,15 +528,25 @@ class Runner:
             fn()
         finally:
             self.thinking = False
-            # Restore play speed, unless the model chose one during the step (e.g. 1x for a raid). Never leave it paused.
-            chosen = self.ctx.extra.get("model_speed")
-            speed = int(play.get("speed", 3)) if chosen is None else max(1, int(chosen))
-            try:
-                self.bridge.call("game.speed", speed=speed)
-                self.bridge.call("game.pause", paused=False)
-            except BridgeError:
-                pass
-            self.bus.emit("status", {"phase": "playing", "model_speed": chosen})
+            if self._budget_held():
+                self._on_llm_hold(self.budget_reason())
+            else:
+                self.restore_play_speed(play)
+
+    def restore_play_speed(self, play: dict[str, Any]) -> None:
+        """Called only without a budget hold; Bridge guards race-prone unpause requests too."""
+        # Restore play speed, unless the model chose one during the step (e.g. 1x for a raid).
+        chosen = self.ctx.extra.get("model_speed")
+        speed = int(play.get("speed", 3)) if chosen is None else max(1, int(chosen))
+        try:
+            self.bridge.call("game.speed", speed=speed)
+            self.bridge.call("game.pause", paused=False)
+        except BridgeError:
+            pass
+        except LLMBlocked as exc:
+            self._on_llm_hold(str(exc))
+            return
+        self.bus.emit("status", {"phase": "playing", "model_speed": chosen, "budget_hold": ""})
 
     def play_step(self, trigger: str, tick: int) -> None:
         urgent = self.is_urgent(trigger)
@@ -661,6 +737,8 @@ class Runner:
                      "(mark the line 'operator tip'), and act on it in the colony if it applies right now.\n" + "\n".join(f"- {m}" for m in msgs))
         msg, hint = situation_packet(self.ctx, trigger, events, alerts)
         plan = self.manager_plan(msg, extra) if self.cfg["play"].get("parallel_manager", True) else {}
+        if self._budget_held():
+            return
         directives = plan.get("directives") or {}
         skip = set(plan.get("skip") or [])
         if plan.get("wake_in_hours"):
@@ -668,6 +746,8 @@ class Runner:
         results: dict[str, Any] = {}
 
         def run(role: str):
+            if self._budget_held():
+                return
             ctx_r = self.ctx.fork(role)
             ctx_r.extra["role"] = role
             if role == roles_mod.CARETAKER:
@@ -727,12 +807,14 @@ class Runner:
                   "Be specific: name pawns, places, quantities. Resolve conflicts between roles here (e.g. who gets the wood). Never skip caretaker when there are open dialogs, letters or an operator message. "
                   "The in-game steward already sets work priorities and designates trees/ore/animals toward stock targets: direct it (targets, posture) rather than ordering per-pawn priorities.")
         try:
-            reply = self.llm.chat([{"role": "system", "content": system}, {"role": "user", "content": packet + ("\n\n" + extra if extra else "")}], tools=None, thinking=False, max_tokens=900, temperature=0.3)
+            reply = self.llm.chat([{"role": "system", "content": system}, {"role": "user", "content": packet + ("\n\n" + extra if extra else "")}], tools=None, thinking=False, max_tokens=900, temperature=0.3, meta={"episode": self.episode, "seed": self.seed, "stream": "manager", "trigger": "manager plan", "attempt": 1})
             text = reply.content.strip()
             start, end = text.find("{"), text.rfind("}")
             plan = _json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
             if not isinstance(plan, dict):
                 plan = {}
+        except LLMBlocked:
+            raise  # a paid hold must never fall back to worker fan-out
         except Exception as e:  # noqa: BLE001
             self.bus.emit("error", {"text": f"manager plan failed: {e}"})
             plan = {}
@@ -742,7 +824,7 @@ class Runner:
 
     def start_improve_thread(self, day: int) -> None:
         """Improvement pass on a second LLM stream, concurrent with play (brain edits hot-load into the play stream)."""
-        if getattr(self, "_improve_thread", None) and self._improve_thread.is_alive():
+        if self._budget_held() or (getattr(self, "_improve_thread", None) and self._improve_thread.is_alive()):
             return
         ctx2 = self.ctx.fork("improve")
         notes_snapshot = list(self.step_notes)
@@ -751,6 +833,8 @@ class Runner:
         def run():
             try:
                 notes = reflect.improve(ctx2, notes_snapshot, day)
+                if self._budget_held():
+                    return
                 self.step_notes.append(f"[improvement pass day {day}] {notes}")
                 sha = braingit.commit(f"episode {self.episode} day {day}: improvement pass")
                 if sha:
@@ -773,6 +857,8 @@ class Runner:
         Called on every in-game day rollover, which is just a cheap regular tick: the real gate is
         `watchdog.due()`, which needs `every_hours` of wall clock AND `min_errors` failures since the last pass.
         A clean error stream never triggers one."""
+        if not (self.cfg.get("watchdog") or {}).get("enabled", False) or self._budget_held():
+            return
         if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
             return
         improving = getattr(self, "_improve_thread", None)
@@ -788,6 +874,8 @@ class Runner:
         """Run the watchdog on its own stream, concurrent with play. It touches mod/Source and agent/rimagent only,
         so it cannot collide with the improvement pass (brain/) or with the running game: nothing it writes is loaded
         until a human restarts."""
+        if not (self.cfg.get("watchdog") or {}).get("enabled", False) or self._budget_held():
+            return
         with self._watchdog_lock:
             if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
                 return
@@ -811,6 +899,8 @@ class Runner:
 
     # ---------- episode end ----------
     def end_episode(self, reason: str) -> None:
+        if self._budget_held():
+            return
         self.bus.emit("status", {"phase": "reflecting"})
         try:
             self.bridge.call("game.pause", paused=True)
@@ -833,6 +923,8 @@ class Runner:
             notes = reflect.episode(self.ctx, self.events, self.step_notes, reason, days)
         except Exception as e:  # noqa: BLE001
             self.bus.emit("error", {"text": f"reflection failed: {e}"})
+        if self._budget_held():
+            return
         sha = braingit.commit(f"episode {self.episode} ({self.seed}): {reason}; score {score}\n\n{notes[:800]}") or braingit.head()
         scorecard.record({"episode": self.episode, "seed": self.seed, "days": days, "colonists": colonists, "deaths": self.deaths, "raids": self.raids, "wealth": summary.get("wealth"), "mood": summary.get("mood_avg"), "research": summary.get("research_done"), "score": score, "assisted": assisted, "brain_sha": sha, "ended": reason})
         self.bus.emit("episode_end", {"episode": self.episode, "score": score, "reason": reason, "assisted": assisted, "brain_sha": sha, "days": days})

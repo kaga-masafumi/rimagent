@@ -28,7 +28,7 @@ def _load_tools(ref: str | None) -> list[dict[str, Any]] | None:
     if not ref:
         return None
     p = _TOOLS_DIR / f"{ref}.json"
-    return json.loads(p.read_text()) if p.exists() else None
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 def _assistant_turn(reply: dict[str, Any]) -> dict[str, Any]:

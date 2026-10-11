@@ -10,6 +10,7 @@ from typing import Any
 from . import memory, scorecard, skills
 from .context import Context
 from .registry import to_text
+from .usage import LLMBlocked
 
 PROMPTS = Path(__file__).parent / "prompts"
 
@@ -61,6 +62,7 @@ class StepResult:
     calls: int = 0
     elapsed: float = 0.0
     ended_by_tool: bool = False
+    stop_reason: str = ""
     transcript: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -108,6 +110,12 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
     ctx.emit("think_start", {"trigger": trigger, "prompt_chars": len(system) + len(user_message), "tools": len(tools), "stream": st})
     step = 0
     while True:
+        try:
+            if ctx.execution_check:
+                ctx.execution_check()
+        except LLMBlocked as exc:
+            res.stop_reason = res.notes = str(exc)
+            break
         if res.calls >= max_calls:
             messages.append({"role": "user", "content": f"You have used {res.calls} tool calls, the limit for this step. Call {end_tools[0]} now to finish."})
             tools_now = [t for t in tools if t["function"]["name"] in end_tools]
@@ -116,12 +124,22 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
         reply = None
         for attempt in range(2):
             try:
-                reply = ctx.llm.chat(messages, tools_now, thinking=thinking if attempt == 0 else False, meta={"episode": ctx.episode, "seed": ctx.seed, "stream": st, "trigger": trigger, "step": step})
+                reply = ctx.llm.chat(messages, tools_now, thinking=thinking if attempt == 0 else False, meta={"episode": ctx.episode, "seed": ctx.seed, "stream": st, "trigger": trigger, "step": step, "attempt": attempt + 1})
+                break
+            except LLMBlocked as exc:
+                res.stop_reason = res.notes = str(exc)
                 break
             except Exception as e:  # noqa: BLE001
                 ctx.emit("error", {"text": f"LLM call failed (attempt {attempt + 1}): {e}"})
         if reply is None:
-            res.notes = "LLM error: gave up after 2 attempts"
+            if not res.stop_reason:
+                res.notes = "LLM error: gave up after 2 attempts"
+            break
+        try:
+            if ctx.execution_check:
+                ctx.execution_check()
+        except LLMBlocked as exc:
+            res.stop_reason = res.notes = str(exc)
             break
         step += 1
         if reply.reasoning:
@@ -141,6 +159,12 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
             break
         image_msgs: list[dict[str, Any]] = []
         for tc in reply.tool_calls:
+            try:
+                if ctx.execution_check:
+                    ctx.execution_check()
+            except LLMBlocked as exc:
+                res.stop_reason = res.notes = str(exc)
+                break
             name, args, cid = tc["name"], tc["arguments"], tc["id"]
             ctx.emit("tool_call", {"name": name, "args": args, "id": cid, "stream": st})
             t1 = time.time()
@@ -162,6 +186,8 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
             if ctx.stop_turn:
                 break
         messages.extend(image_msgs)
+        if res.stop_reason:
+            break
         if ctx.interrupt_check is not None and not ctx.stop_turn:
             try:
                 urgent = ctx.interrupt_check()
@@ -193,7 +219,7 @@ def think(ctx: Context, user_message: str, situation_hint: str = "", *, max_call
                 if total < 120_000:
                     break
     res.elapsed = time.time() - t0
-    ctx.emit("think_end", {"notes": res.notes, "wake": {"in_hours": ctx.wake.in_hours, "on_kinds": ctx.wake.on_kinds}, "calls": res.calls, "elapsed": round(res.elapsed, 1), "end_episode": ctx.end_episode_reason, "stream": st})
+    ctx.emit("think_end", {"notes": res.notes, "stop_reason": res.stop_reason, "wake": {"in_hours": ctx.wake.in_hours, "on_kinds": ctx.wake.on_kinds}, "calls": res.calls, "elapsed": round(res.elapsed, 1), "end_episode": ctx.end_episode_reason, "stream": st})
     return res
 
 

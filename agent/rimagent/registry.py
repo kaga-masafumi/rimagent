@@ -265,6 +265,9 @@ class Registry:
         if t is None:
             return {"error": f"unknown tool {name!r}"}, False
         try:
+            check = getattr(ctx, "execution_check", None)
+            if check:
+                check()
             if t.source == "bridge":
                 return t.fn(ctx, **args), True
             args = {k: coerce_param(v) if k not in ("code", "body", "text", "content") else v for k, v in args.items()}

@@ -40,6 +40,7 @@ class Context:
     # set by the runner: returns urgent events that arrived while a step is running (already logged/tracked)
     interrupt_check: Callable[[], list[str]] | None = None
     stream: str = "play"   # which LLM stream this context drives (play | improve | reflect)
+    execution_check: Callable[[], None] | None = None  # budget/policy check before tools and watchers
 
     def fork(self, stream: str) -> "Context":
         """A sibling context sharing bridge/llm/registry/emit but with its own turn flags (for a concurrent stream)."""

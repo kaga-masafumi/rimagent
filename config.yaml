@@ -1,10 +1,12 @@
 # rimagent configuration
 llm:
+  provider: qwen                     # qwen (legacy default) or openai; switch at agent restart
   base_url: http://127.0.0.1:8000/v1   # any OpenAI-compatible server with native tool calls (vLLM --enable-auto-tool-choice --tool-call-parser hermes)
   model: Qwen/Qwen3-32B                 # tested with Qwen 3.x 27-32B; put your real endpoint in config.local.yaml (gitignored)
   api_key: not-needed
   max_streams: 4
   thinking: true           # Qwen thinking mode for play/reflection steps
+  reasoning_effort: low    # OpenAI only; thinking=false maps to none
   max_tokens: 4000
   timeout_s: 240
 bridge:
@@ -53,6 +55,9 @@ steward:
     # those pawns alone. Omit for the built-in table (agent/rimagent/watchers.py SUPERSEDED_WATCHERS), {} to disable, or your own map.
     # superseded_watchers: {hostile_draft: combat, undraft_after_fight: combat, fire_alert: fire, rescue_downed: rescue,
     #                       unforbid_drops_watcher: unforbid, rotting_corpses: corpses, food_policy_watcher: policies, build_stall: blueprints}
+budget:
+  daily_usd: 1             # real-world Asia/Tokyo; only priced providers are capped
+  monthly_usd: 10          # holds persist across agent restarts and require explicit resume
 watchdog:
   # A privileged, low-frequency self-correction stream. It reads the tool-call errors the play streams produced,
   # separates model noise from genuine defects, and patches the PROJECT'S OWN SOURCE (mod/Source/** and
@@ -60,7 +65,7 @@ watchdog:
   # deploys: the verification build goes to a scratch directory, the game is never restarted, nothing is pushed.
   # Verified fixes are committed locally and wait for a human to deploy at the next natural restart.
   # This is NOT the improvement pass: that one stays inside brain/ (skills, tools, watchers) and hot-reloads.
-  enabled: true
+  enabled: false          # source self-editing is disabled; dedicated tools are not registered
   every_hours: 6           # wall-clock hours between passes (checked at each in-game day rollover)
   min_errors: 8            # and only if at least this many tool calls failed since the last pass (a clean stream fires nothing)
   max_tool_calls: 40       # budget for the whole pass (smaller than play's max_tool_calls; reading source is expensive)
