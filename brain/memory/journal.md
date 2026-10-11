@@ -21,3 +21,9 @@ Spike traps cannot be adjacent to another trap. The consequence is nastier than 
 
 ## 2026-09-16 19:27 (episode 1): Steward stock-job targets are ceilings in units; lower them to release a pawn
 The steward's stock jobs (forestry/foraging/hunting/mining/livestock) keep designating toward a numeric target. A hunting target is counted in meat units, so a big default (e.g. 525) makes the designated hunter hunt forever and starve every other job — especially when the hunter is also your only builder. Lower or raise the target instead of hand-designating animals: rw_steward_stock_set(kind=hunting, target=120) released my builder within a day. The Stock block shows `target (current)` per job, and `rw_steward_stock_run(kind=...)` forces a pass now. Never hand-designate animals/trees/ore while the matching stock job is enabled — raise or lower its target, or the job just re-designates.
+
+## 2026-10-11 20:51 (episode 1): Day-0 survival gate
+A one-day-cap episode showed the correct universal gate: food at 0–1.1 days must override expansion, missions, and research. Verify spawned survival food, build the smallest roofed shelter and campfire, add the cooking bill immediately, plant rice, and keep hunting around 80–120 meat so the only builder is not monopolized. Expansion/missions wait for roughly 6+ food-days, finished shelter, and basic defense.
+
+## 2026-10-11 20:51 (episode 1): Operator expansion advice
+Operator asked whether to expand or run missions. Adopt a hard readiness gate: no optional expansion or missions while food is under 6 days, shelter is incomplete, or basic ranged/melee defense is missing; missions add travel-food and combat risk and are not early necessities.
