@@ -110,7 +110,7 @@ def create_app(bus: Any, bridge: Any, controls: Any) -> FastAPI:
             for e in bus.since(seq, limit=5000):
                 seq = e["seq"]
                 yield {"id": str(seq), "data": json.dumps(e, default=str)}
-            while True:
+            while not getattr(getattr(controls, "r", None), "stop", False):
                 if await request.is_disconnected():
                     break
                 evs = await asyncio.to_thread(bus.wait, seq, 5.0)
@@ -344,6 +344,7 @@ def serve_in_thread(app: FastAPI, port: int, host: str = "127.0.0.1") -> threadi
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     t = threading.Thread(target=server.run, name="dashboard", daemon=True)
+    t.server = server
     t.start()
     return t
 

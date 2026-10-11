@@ -1,0 +1,4 @@
+interface:
+  display_name: RimWorld 指示プレイ
+  short_description: 人間の指示を受け、マップと状態を確認してRimBridgeで作業を設定する
+  default_prompt: $rimworld-director を使って、今のコロニーの状態を確認し、私の指示に必要な操作を設定してください。

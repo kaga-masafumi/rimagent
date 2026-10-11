@@ -29,8 +29,9 @@ def cmd_play(args):
     if args.no_pause:
         CONFIG["play"]["pause_to_think"] = False
     r = Runner(CONFIG, BUS)
+    dashboard_thread = None
     if not args.no_dashboard:
-        start_dashboard(r)
+        dashboard_thread = start_dashboard(r)
     if args.verbose:
         def printer(ev):
             k, d = ev["kind"], ev["data"]
@@ -49,6 +50,9 @@ def cmd_play(args):
         print("stopping")
     finally:
         r.request_stop()
+        if dashboard_thread:
+            dashboard_thread.server.should_exit = True
+            dashboard_thread.join(timeout=15)
 
 
 def cmd_think(args):
@@ -70,6 +74,58 @@ def cmd_think(args):
     msg, hint = situation_packet(r.ctx, args.trigger, events, [])
     res = think(r.ctx, msg, hint, trigger=args.trigger)
     print("\nNOTES:", res.notes, "\ncalls:", res.calls, "elapsed:", round(res.elapsed, 1))
+
+
+def cmd_assist(args):
+    import asyncio, socket, webbrowser
+    import uvicorn
+    from .assist import AssistController
+    from .assist_app import create_app
+    from .bridge import BridgeError
+    port = int(CONFIG.get("dashboard", {}).get("port", 8770))
+    sock = socket.socket()
+    controller = None
+    try:
+        # Reserve the UI port before constructing a ledger or touching the game.
+        try:
+            sock.bind(("127.0.0.1", port))
+            sock.listen(128)
+        except OSError as exc:
+            raise RuntimeError(f"Port {port} is already in use; stop play / assist first") from exc
+        controller = AssistController(CONFIG)
+        controller.connect()
+        server = uvicorn.Server(uvicorn.Config(create_app(controller), host="127.0.0.1", port=port, log_level="info", access_log=False))
+        async def serve():
+            task = asyncio.create_task(server.serve(sockets=[sock]))
+            while not server.started and not task.done():
+                await asyncio.sleep(.1)
+            if server.started:
+                print(f"Assist dashboard: http://127.0.0.1:{port}", flush=True)
+                if not args.no_browser:
+                    webbrowser.open(f"http://127.0.0.1:{port}")
+            while not task.done():
+                if controller.stop_event.is_set():
+                    server.should_exit = True
+                await asyncio.sleep(.2)
+            await task
+        try:
+            asyncio.run(serve())
+        except KeyboardInterrupt:
+            print("Stopping assist; waiting for in-flight usage accounting.", flush=True)
+    except BridgeError as exc:
+        raise RuntimeError(f"Assist could not connect: {exc}") from exc
+    finally:
+        if controller:
+            try:
+                controller.control("kill")
+            finally:
+                if controller.worker:
+                    controller.worker.join()
+                controller.bridge._client.close()
+                if getattr(controller.llm, "_capture_fh", None):
+                    controller.llm._capture_fh.close()
+                controller.llm.client.close()
+        sock.close()
 
 
 def cmd_tools(args):
@@ -157,6 +213,9 @@ def main(argv=None):
     p.add_argument("--no-dashboard", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_play)
+    a = sub.add_parser("assist", help="human-directed commands; no autonomous play or background LLM requests")
+    a.add_argument("--no-browser", action="store_true")
+    a.set_defaults(fn=cmd_assist)
     t = sub.add_parser("think", help="run one think step against the live game")
     t.add_argument("--trigger", default="manual")
     t.set_defaults(fn=cmd_think)
@@ -184,7 +243,12 @@ def main(argv=None):
     if getattr(args, "cost_usd", None) is not None and not getattr(args, "resolve", None):
         ap.error("--cost-usd requires --resolve")
     try:
-        args.fn(args)
+        if args.cmd in ("play", "assist"):
+            from .session_lock import session_lock
+            with session_lock():
+                args.fn(args)
+        else:
+            args.fn(args)
     except (ValueError, RuntimeError) as exc:
         ap.exit(1, f"rimagent: {exc}\n")
 

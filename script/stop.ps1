@@ -30,7 +30,7 @@ if (-not $Force) { throw 'Agent is still waiting for a request. Retry with -Forc
 foreach ($agentId in $agentIds) {
     $agentProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$agentId" -ErrorAction Stop
     if (-not $agentProcess) { continue }
-    if ($agentProcess.CommandLine -notmatch [regex]::Escape($repoRoot) -or $agentProcess.CommandLine -notmatch 'rimagent' -or $agentProcess.CommandLine -notmatch '\bplay\b') {
+    if ($agentProcess.CommandLine -notmatch [regex]::Escape($repoRoot) -or $agentProcess.CommandLine -notmatch 'rimagent' -or $agentProcess.CommandLine -notmatch '\b(play|assist)\b') {
         throw "Refusing to stop unrelated process $agentId."
     }
     Stop-Process -Id $agentId -ErrorAction Stop

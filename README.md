@@ -1,5 +1,9 @@
 # rimagent
 
+Human-directed play is available with `rimagent assist` or `script/start-assist.ps1` on Windows.
+See [the assist guide](docs/ASSIST.md): only human commands invoke the LLM; the human observes results and decides what to do next.
+For direct play from a Codex chat, install [the rimworld-director skill](skills/rimworld-director/SKILL.md).
+
 Windows 11 setup, OpenAI/Qwen switching, and persistent cost limits are documented in
 [Windows / LLM / budget guide](docs/WINDOWS_LLM.md). Watchdog source editing is disabled by default.
 Copy [config.openai.example.yaml](config.openai.example.yaml) to `config.local.yaml` to select OpenAI;

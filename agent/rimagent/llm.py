@@ -94,7 +94,7 @@ class LLM:
         except Exception:  # noqa: BLE001 — capture must never break play
             pass
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool | None = None, max_tokens: int | None = None, temperature: float = 0.6, tool_choice: str | None = None, meta: dict[str, Any] | None = None) -> LLMReply:
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool | None = None, max_tokens: int | None = None, temperature: float = 0.6, tool_choice: str | None = None, meta: dict[str, Any] | None = None, request_guard=None) -> LLMReply:
         thinking = self.default_thinking if thinking is None else thinking
         limit = self.max_tokens if max_tokens is None else max_tokens
         if limit <= 0:
@@ -103,6 +103,8 @@ class LLM:
                                        max_tokens=limit, temperature=temperature, tool_choice=tool_choice)
         t0 = time.time()
         with self._sem:
+            if request_guard is not None:
+                request_guard()  # Runs for every physical request, including Qwen's empty retry.
             rid = self.ledger.reserve(self.provider.name, self.model, self.price,
                                       estimate_input(messages, kwargs.get("tools")), limit, meta)
             try:
@@ -168,7 +170,7 @@ class LLM:
         # Qwen sometimes returns nothing after a long think; retry once without thinking.
         if self.provider.retry_empty and thinking and not reply.content.strip() and not reply.tool_calls:
             retry_meta = {**(meta or {}), "retry": "empty_without_thinking"}
-            return self.chat(messages, tools, thinking=False, max_tokens=max_tokens, temperature=temperature, tool_choice=tool_choice, meta=retry_meta)
+            return self.chat(messages, tools, thinking=False, max_tokens=max_tokens, temperature=temperature, tool_choice=tool_choice, meta=retry_meta, request_guard=request_guard)
         return reply
 
     def ensure_active(self):

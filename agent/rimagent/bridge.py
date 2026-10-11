@@ -21,12 +21,12 @@ class Bridge:
         self.operation_guard = None  # optional Python-side execution policy; RPCs stay unchanged
 
     # ---- low level ----
-    def call(self, method: str, timeout_ms: int | None = None, **params: Any) -> Any:
-        with self.operation_guard(method, params) if self.operation_guard else nullcontext():
-            return self._call(method, timeout_ms, **params)
+    def call(self, rpc_method: str, /, timeout_ms: int | None = None, **params: Any) -> Any:
+        with self.operation_guard(rpc_method, params) if self.operation_guard else nullcontext():
+            return self._call(rpc_method, timeout_ms, **params)
 
-    def _call(self, method: str, timeout_ms: int | None = None, **params: Any) -> Any:
-        payload: dict[str, Any] = {"method": method, "params": params}
+    def _call(self, rpc_method: str, /, timeout_ms: int | None = None, **params: Any) -> Any:
+        payload: dict[str, Any] = {"method": rpc_method, "params": params}
         if timeout_ms:
             payload["timeout_ms"] = timeout_ms
         try:
