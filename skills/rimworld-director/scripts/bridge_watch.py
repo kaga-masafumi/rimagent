@@ -77,15 +77,23 @@ def changes(previous, current):
     }
 
 
-def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True):
-    if (current['summary'].get('downed', 0) or current['summary'].get('hostiles') or
-            current['summary'].get('danger') == 'High'):
+def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
+               acknowledged_hostiles=()):
+    hostiles = current['summary'].get('hostiles', [])
+    if (current['summary'].get('downed', 0) or
+            any(h.get('id') not in acknowledged_hostiles for h in hostiles) or
+            (current['summary'].get('danger') == 'High' and
+             not any(h.get('id') in acknowledged_hostiles for h in hostiles))):
         return 'danger'
     if any(a.get('priority') == 'Critical' for a in current['alerts']):
         return 'danger'
-    if any(letter.get('def') in ('ThreatBig', 'ThreatSmall', 'Death')
+    if any(letter.get('def') == 'Death' or
+           (letter.get('def') in ('ThreatBig', 'ThreatSmall') and
+            letter.get('target') not in acknowledged_hostiles)
            for letter in delta['new_letters']):
         return 'danger'
+    if acknowledged_hostiles and not any(h.get('id') in acknowledged_hostiles for h in hostiles):
+        return 'threat_cleared'
     if mode == 'emergency' and (delta['new_alerts'] or delta['worsened_alerts'] or delta['new_letters']):
         return 'event'
     if allow_completion and current['value'] is not None and current['value'] >= goal['at_least']:
@@ -94,10 +102,15 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True)
 
 
 def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
-         max_ticks=None, stall_ticks=None, mode='routine'):
+         max_ticks=None, stall_ticks=None, mode='routine', acknowledged_hostiles=()):
     validate(goal)
     if mode not in ('routine', 'emergency'):
         raise ValueError('Mode must be routine or emergency')
+    if (not isinstance(acknowledged_hostiles, (list, tuple)) or
+            any(not isinstance(x, str) or not x.strip() for x in acknowledged_hostiles) or
+            len(acknowledged_hostiles) > 50 or
+            (acknowledged_hostiles and mode != 'emergency')):
+        raise ValueError('Known hostile IDs require emergency mode, at most 50 nonempty IDs')
     seconds = (300 if mode == 'routine' else 30) if seconds is None else seconds
     poll = (2 if mode == 'routine' else 1) if poll is None else poll
     if not write:
@@ -114,9 +127,11 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
         if status.get('state') != 'playing' or not status.get('paused'):
             raise RuntimeError('Pause and verify a loaded colony before waiting')
         baseline = current = observe(url, goal)
-        reason = reason_for(current, changes(current, current), goal, mode=mode)
+        reason = reason_for(current, changes(current, current), goal, mode=mode,
+                            acknowledged_hostiles=acknowledged_hostiles)
         bridge.record(repo, {'stage': 'wait_intent', 'goal': goal, 'seconds': seconds,
-                             'speed': speed, 'mode': mode, 'poll': poll, 'baseline': baseline})
+                             'speed': speed, 'mode': mode, 'poll': poll, 'baseline': baseline,
+                             'acknowledged_hostiles': list(acknowledged_hostiles)})
         error = None
         pause_error = None
         started = time.monotonic()
@@ -145,7 +160,8 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
                 current = sample
                 delta = changes(baseline, current)
                 reason = reason_for(current, delta, goal, mode=mode,
-                                    allow_completion=mode == 'emergency')
+                                    allow_completion=mode == 'emergency',
+                                    acknowledged_hostiles=acknowledged_hostiles)
                 tick = current['status']['tick']
                 if current['value'] > best:
                     best, last_progress = current['value'], tick
@@ -172,7 +188,8 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
                     current = final
                     if current['status'].get('paused') is not True:
                         raise RuntimeError('Game resumed during final observation; pause was not confirmed')
-                    reason = reason_for(current, changes(baseline, current), goal, mode=mode) or reason
+                    reason = reason_for(current, changes(baseline, current), goal, mode=mode,
+                                        acknowledged_hostiles=acknowledged_hostiles) or reason
                     if (reason == 'routine_check' and stall_ticks is not None and
                             current['value'] <= best and
                             current['status']['tick'] - last_progress >= stall_ticks):
@@ -181,6 +198,7 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=3,
                 pause_error = str(exc)
         delta = changes(baseline, current)
         packet = {'reason': 'error' if pause_error else reason, 'mode': mode,
+                  'acknowledged_hostiles': list(acknowledged_hostiles),
                   'goal_met': error is None and pause_error is None and current['value'] >= goal['at_least'],
                   'goal': goal, 'progress': {'before': baseline['value'], 'current': current['value'],
                                            'target': goal['at_least']},
@@ -201,6 +219,7 @@ def main():
     parser.add_argument('--goal-file', type=Path, required=True)
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--mode', choices=('routine', 'emergency'), default='routine')
+    parser.add_argument('--acknowledge-hostile', action='append', default=[], metavar='ID')
     parser.add_argument('--seconds', type=float, default=None)
     parser.add_argument('--poll', type=float, default=None)
     parser.add_argument('--speed', type=int, default=3)
@@ -218,7 +237,8 @@ def main():
             parser.error('Use --repo to select the rimagent checkout')
         result = wait(args.url, args.repo, goal, write=args.write, seconds=args.seconds,
                       poll=args.poll, speed=args.speed, max_ticks=args.max_ticks,
-                      stall_ticks=args.stall_ticks, mode=args.mode)
+                      stall_ticks=args.stall_ticks, mode=args.mode,
+                      acknowledged_hostiles=args.acknowledge_hostile)
     else:
         result = observe(args.url, goal)
     print(json.dumps(result, ensure_ascii=False, indent=2))

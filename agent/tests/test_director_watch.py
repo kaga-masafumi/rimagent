@@ -187,6 +187,33 @@ def test_routine_remembers_a_normal_alert_that_resolved_between_reviews(tmp_path
     assert result['observed_events']['new_alerts'][0]['label'] == 'Idle'
     assert result['observed_events']['resolved_alerts'][0]['label'] == 'Idle'
 
+@pytest.mark.parametrize('outcome,expected', [('cleared','threat_cleared'),('new_enemy','danger'),('downed','danger'),('unrelated_high','danger')])
+def test_acknowledged_threat_can_be_handled_without_ignoring_new_danger(tmp_path, outcome, expected):
+    class Combat(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary':
+                result['hostiles'] = [{'id':'Iguana'}]
+                if self.resumed:
+                    if outcome == 'cleared': result['hostiles'] = []
+                    if outcome == 'new_enemy': result['hostiles'].append({'id':'Raider'})
+                    if outcome == 'downed': result['downed'] = 1
+                    if outcome == 'unrelated_high':
+                        result['hostiles'] = []
+                        result['danger'] = 'High'
+            return result
+    game = Combat()
+    result = run(tmp_path, game, acknowledged_hostiles=['Iguana'])
+    assert result['reason'] == expected and result['paused']
+    assert game.calls.count('game.speed') == 1
+    assert result['acknowledged_hostiles'] == ['Iguana']
+
+def test_routine_cannot_acknowledge_threats(tmp_path):
+    with patch.object(watch.bridge, 'rpc') as rpc:
+        with pytest.raises(ValueError):
+            watch.wait('http://localhost',tmp_path,GOAL,write=True,acknowledged_hostiles=['Iguana'])
+        rpc.assert_not_called()
+
 @pytest.mark.parametrize('goal',[
     {'kind':'python','def':'Bed','at_least':1},
     {'kind':'building_count','def':'Bed','at_least':501},

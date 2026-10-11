@@ -14,7 +14,7 @@ READ = {'game.status', 'map.view', 'map.detail', 'map.find', 'map.open_rects',
         'map.power', 'ui.gizmos', 'ui.orders_at', 'anchor.list', 'steward.status',
         'steward.stock.list', 'steward.orders', 'steward.orders.explain', 'steward.explain'}
 WRITE = {'game.pause', 'game.speed', 'ui.build', 'ui.build_many', 'ui.designate',
-         'ui.zone', 'ui.set_work', 'ui.set_work_many', 'ui.set_policies', 'ui.bill',
+         'ui.zone', 'ui.area', 'ui.set_work', 'ui.set_work_many', 'ui.set_policies', 'ui.bill',
          'ui.add_bill', 'ui.set_research', 'ui.set_schedule', 'ui.storage', 'ui.animal',
          'ui.cancel_job', 'ui.select', 'ui.draft', 'ui.goto', 'ui.attack', 'ui.order',
          'ui.job', 'ui.letter', 'ui.dialog', 'ui.press', 'anchor.set', 'anchor.delete',
