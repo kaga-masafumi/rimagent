@@ -208,6 +208,31 @@ def test_small_fire_interrupts_every_mode(tmp_path, mode):
     assert result['elapsed_wall_seconds'] == 2
 
 
+def test_acknowledged_fire_can_be_extinguished_but_new_fire_interrupts(tmp_path):
+    class FireHandling(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'map.find' and params['def'] == 'Fire':
+                return {'things': ([{'id': 'Fire1'}] if self.options.get('fire') else []) +
+                        ([{'id': 'Fire2'}] if self.resumed and self.options.get('new_fire') else [])}
+            return result
+    game = FireHandling()
+    baseline = game.rpc('', 'map.find', {'def': 'Fire', 'limit': 50})
+    assert baseline == {'things': []}
+    # The known fire exists before this supervised response window.
+    game.options['fire'] = True
+    game.resumed = True
+    with patch.object(watch.bridge, 'rpc', side_effect=game.rpc):
+        current = watch.observe('http://localhost', GOAL)
+    assert current['summary']['fire_ids'] == ['Fire1']
+    result = run(tmp_path, FireHandling(fire=True), mode='emergency', seconds=3,
+                 acknowledged_fires=['Fire1'])
+    assert result['reason'] == 'timeout'
+    result = run(tmp_path, FireHandling(fire=True, new_fire=True), mode='emergency', seconds=10,
+                 acknowledged_fires=['Fire1'])
+    assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 1
+
+
 @pytest.mark.parametrize('threat', ['hostile', 'downed'])
 def test_maintenance_does_not_delay_new_emergencies(tmp_path, threat):
     class Threat(Game):

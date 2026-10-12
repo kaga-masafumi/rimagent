@@ -35,8 +35,9 @@ def observe(url, goal, *, measure_progress=True):
         raise RuntimeError('Alert observation failed')
     # Fire is an actual burning thing, unlike a campfire building. Do not
     # wait for the game danger rating to rise before detecting a small fire.
-    fires = bridge.rpc(url, 'map.find', {'def': 'Fire', 'limit': 1})
-    summary = {**summary, 'fires': len(fires['things'])}
+    fires = bridge.rpc(url, 'map.find', {'def': 'Fire', 'limit': 50})
+    summary = {**summary, 'fires': len(fires['things']),
+               'fire_ids': [fire['id'] for fire in fires['things']]}
     value = None
     if measure_progress and goal['kind'] == 'building_count':
         found = bridge.rpc(url, 'map.find', {
@@ -51,7 +52,7 @@ def observe(url, goal, *, measure_progress=True):
     check_session(before, after)
     return {'status': after, 'value': value, 'alerts': alerts, 'letters': letters,
             'summary': {key: summary[key] for key in
-                        ('downed', 'hostiles', 'fires', 'danger', 'home_center', 'food_days', 'key_stocks', 'blueprints', 'frames')
+                        ('downed', 'hostiles', 'fires', 'fire_ids', 'danger', 'home_center', 'food_days', 'key_stocks', 'blueprints', 'frames')
                         if key in summary}}
 
 
@@ -82,10 +83,11 @@ def changes(previous, current):
 
 
 def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
-               acknowledged_hostiles=()):
+               acknowledged_hostiles=(), acknowledged_fires=()):
     hostiles = current['summary'].get('hostiles', [])
     home = current['summary'].get('home_center')
-    if (current['summary'].get('fires', 0) or current['summary'].get('downed', 0) or
+    if (any(fire not in acknowledged_fires for fire in current['summary'].get('fire_ids', [])) or
+            current['summary'].get('downed', 0) or
             any(h.get('id') not in acknowledged_hostiles for h in hostiles) or
             (mode != 'emergency' and home and any(h.get('id') in acknowledged_hostiles and h.get('pos') and
                           math.dist(home, h['pos']) <= 45 for h in hostiles)) or
@@ -109,7 +111,8 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
 
 
 def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
-         max_ticks=None, stall_ticks=None, mode='routine', acknowledged_hostiles=()):
+         max_ticks=None, stall_ticks=None, mode='routine', acknowledged_hostiles=(),
+         acknowledged_fires=()):
     validate(goal)
     if mode not in ('routine', 'maintenance', 'emergency'):
         raise ValueError('Mode must be routine, maintenance or emergency')
@@ -118,6 +121,11 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
             len(acknowledged_hostiles) > 50 or
             len(set(acknowledged_hostiles)) != len(acknowledged_hostiles)):
         raise ValueError('Known hostile IDs must be unique nonempty strings (maximum 50)')
+    if (not isinstance(acknowledged_fires, (list, tuple)) or
+            any(not isinstance(x, str) or not x.strip() for x in acknowledged_fires) or
+            len(acknowledged_fires) > 50 or
+            len(set(acknowledged_fires)) != len(acknowledged_fires)):
+        raise ValueError('Known fire IDs must be unique nonempty strings (maximum 50)')
     seconds = {'routine': 300, 'maintenance': 60, 'emergency': 30}[mode] if seconds is None else seconds
     poll = (1 if mode == 'emergency' else 2) if poll is None else poll
     speed = (1 if mode == 'emergency' else 3) if speed is None else speed
@@ -136,10 +144,12 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
             raise RuntimeError('Pause and verify a loaded colony before waiting')
         baseline = current = observe(url, goal)
         reason = reason_for(current, changes(current, current), goal, mode=mode,
-                            acknowledged_hostiles=acknowledged_hostiles)
+                            acknowledged_hostiles=acknowledged_hostiles,
+                            acknowledged_fires=acknowledged_fires)
         bridge.record(repo, {'stage': 'wait_intent', 'goal': goal, 'seconds': seconds,
                              'speed': speed, 'mode': mode, 'poll': poll, 'baseline': baseline,
-                             'acknowledged_hostiles': list(acknowledged_hostiles)})
+                             'acknowledged_hostiles': list(acknowledged_hostiles),
+                             'acknowledged_fires': list(acknowledged_fires)})
         error = None
         pause_error = None
         started = time.monotonic()
@@ -169,7 +179,8 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
                 delta = changes(baseline, current)
                 reason = reason_for(current, delta, goal, mode=mode,
                                     allow_completion=mode == 'emergency',
-                                    acknowledged_hostiles=acknowledged_hostiles)
+                                    acknowledged_hostiles=acknowledged_hostiles,
+                                    acknowledged_fires=acknowledged_fires)
                 tick = current['status']['tick']
                 if current['value'] > best:
                     best, last_progress = current['value'], tick
@@ -197,7 +208,8 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
                     if current['status'].get('paused') is not True:
                         raise RuntimeError('Game resumed during final observation; pause was not confirmed')
                     reason = reason_for(current, changes(baseline, current), goal, mode=mode,
-                                        acknowledged_hostiles=acknowledged_hostiles) or reason
+                                        acknowledged_hostiles=acknowledged_hostiles,
+                                        acknowledged_fires=acknowledged_fires) or reason
                     if (reason in ('routine_check', 'maintenance_check') and stall_ticks is not None and
                             current['value'] <= best and
                             current['status']['tick'] - last_progress >= stall_ticks):
@@ -228,6 +240,7 @@ def main():
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--mode', choices=('routine', 'maintenance', 'emergency'), default='routine')
     parser.add_argument('--acknowledge-hostile', action='append', default=[], metavar='ID')
+    parser.add_argument('--acknowledge-fire', action='append', default=[], metavar='ID')
     parser.add_argument('--seconds', type=float, default=None)
     parser.add_argument('--poll', type=float, default=None)
     parser.add_argument('--speed', type=int, default=None)
@@ -246,7 +259,8 @@ def main():
         result = wait(args.url, args.repo, goal, write=args.write, seconds=args.seconds,
                       poll=args.poll, speed=args.speed, max_ticks=args.max_ticks,
                       stall_ticks=args.stall_ticks, mode=args.mode,
-                      acknowledged_hostiles=args.acknowledge_hostile)
+                      acknowledged_hostiles=args.acknowledge_hostile,
+                      acknowledged_fires=args.acknowledge_fire)
     else:
         result = observe(args.url, goal)
     print(json.dumps(result, ensure_ascii=False, indent=2))
