@@ -31,7 +31,7 @@ class Game:
                     'seed': 'test', 'map_size': [250,250]}
         if method == 'state.summary':
             if self.resumed and self.options.get('fail_read'): raise TimeoutError('read timeout')
-            return {'downed': int(bool(self.options.get('danger'))), 'hostiles': []}
+            return {'downed': int(bool(self.options.get('danger'))), 'hostiles': [], 'home_center': [100, 100]}
         if method == 'state.alerts':
             return [{'label': 'Food', 'priority': 'High'}] if self.resumed and self.options.get('event') else []
         if method == 'state.letters': return []
@@ -254,11 +254,40 @@ def test_acknowledged_threat_can_be_handled_without_ignoring_new_danger(tmp_path
     assert game.calls.count('game.speed') == 1
     assert result['acknowledged_hostiles'] == ['Iguana']
 
-def test_routine_cannot_acknowledge_threats(tmp_path):
-    with patch.object(watch.bridge, 'rpc') as rpc:
-        with pytest.raises(ValueError):
-            watch.wait('http://localhost',tmp_path,GOAL,write=True,acknowledged_hostiles=['Iguana'])
-        rpc.assert_not_called()
+def test_known_distant_hostile_can_be_monitored_in_routine(tmp_path):
+    class Distant(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary': result['hostiles'] = [{'id':'Iguana','pos':[230,20]}]
+            return result
+    result = run(tmp_path, Distant(), mode='routine', seconds=6, poll=2,
+                 acknowledged_hostiles=['Iguana'])
+    assert result['reason'] == 'routine_check' and result['elapsed_wall_seconds'] == 6
+
+
+def test_acknowledged_hostile_triggers_emergency_inside_45_cells(tmp_path):
+    class Approaching(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary':
+                result['hostiles'] = [{'id':'Iguana','pos':[130,130] if self.tick >= 200 else [230,20]}]
+            return result
+    result = run(tmp_path, Approaching(), mode='routine', seconds=300, poll=2,
+                 acknowledged_hostiles=['Iguana'])
+    assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 2
+
+
+def test_routine_acknowledgement_does_not_ignore_new_hostile(tmp_path):
+    class NewEnemy(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary':
+                result['hostiles'] = [{'id':'Iguana','pos':[230,20]}]
+                if self.resumed: result['hostiles'].append({'id':'Raider','pos':[240,20]})
+            return result
+    result = run(tmp_path, NewEnemy(), mode='routine', seconds=300, poll=2,
+                 acknowledged_hostiles=['Iguana'])
+    assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 2
 
 @pytest.mark.parametrize('goal',[
     {'kind':'python','def':'Bed','at_least':1},

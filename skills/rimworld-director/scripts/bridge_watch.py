@@ -51,7 +51,7 @@ def observe(url, goal, *, measure_progress=True):
     check_session(before, after)
     return {'status': after, 'value': value, 'alerts': alerts, 'letters': letters,
             'summary': {key: summary[key] for key in
-                        ('downed', 'hostiles', 'fires', 'danger', 'food_days', 'key_stocks', 'blueprints', 'frames')
+                        ('downed', 'hostiles', 'fires', 'danger', 'home_center', 'food_days', 'key_stocks', 'blueprints', 'frames')
                         if key in summary}}
 
 
@@ -84,8 +84,11 @@ def changes(previous, current):
 def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
                acknowledged_hostiles=()):
     hostiles = current['summary'].get('hostiles', [])
+    home = current['summary'].get('home_center')
     if (current['summary'].get('fires', 0) or current['summary'].get('downed', 0) or
             any(h.get('id') not in acknowledged_hostiles for h in hostiles) or
+            (home and any(h.get('id') in acknowledged_hostiles and h.get('pos') and
+                          math.dist(home, h['pos']) <= 45 for h in hostiles)) or
             (current['summary'].get('danger') == 'High' and
              not any(h.get('id') in acknowledged_hostiles for h in hostiles))):
         return 'danger'
@@ -113,8 +116,8 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
     if (not isinstance(acknowledged_hostiles, (list, tuple)) or
             any(not isinstance(x, str) or not x.strip() for x in acknowledged_hostiles) or
             len(acknowledged_hostiles) > 50 or
-            (acknowledged_hostiles and mode != 'emergency')):
-        raise ValueError('Known hostile IDs require emergency mode, at most 50 nonempty IDs')
+            len(set(acknowledged_hostiles)) != len(acknowledged_hostiles)):
+        raise ValueError('Known hostile IDs must be unique nonempty strings (maximum 50)')
     seconds = {'routine': 300, 'maintenance': 60, 'emergency': 30}[mode] if seconds is None else seconds
     poll = (1 if mode == 'emergency' else 2) if poll is None else poll
     speed = (1 if mode == 'emergency' else 3) if speed is None else speed
