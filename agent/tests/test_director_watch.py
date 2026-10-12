@@ -277,6 +277,17 @@ def test_acknowledged_hostile_triggers_emergency_inside_45_cells(tmp_path):
     assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 2
 
 
+def test_close_acknowledged_hostile_can_run_emergency_ticks(tmp_path):
+    class CloseHostile(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary': result['hostiles'] = [{'id':'Iguana','pos':[130,130]}]
+            return result
+    result = run(tmp_path, CloseHostile(), mode='emergency', seconds=6, poll=1,
+                 acknowledged_hostiles=['Iguana'])
+    assert result['reason'] == 'timeout' and result['elapsed_wall_seconds'] == 6
+
+
 def test_routine_acknowledgement_does_not_ignore_new_hostile(tmp_path):
     class NewEnemy(Game):
         def rpc(self, url, method, params):

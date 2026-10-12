@@ -87,7 +87,7 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
     home = current['summary'].get('home_center')
     if (current['summary'].get('fires', 0) or current['summary'].get('downed', 0) or
             any(h.get('id') not in acknowledged_hostiles for h in hostiles) or
-            (home and any(h.get('id') in acknowledged_hostiles and h.get('pos') and
+            (mode != 'emergency' and home and any(h.get('id') in acknowledged_hostiles and h.get('pos') and
                           math.dist(home, h['pos']) <= 45 for h in hostiles)) or
             (current['summary'].get('danger') == 'High' and
              not any(h.get('id') in acknowledged_hostiles for h in hostiles))):
