@@ -107,7 +107,9 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
         return 'danger'
     if acknowledged_hostiles and not any(h.get('id') in acknowledged_hostiles for h in hostiles):
         return 'threat_cleared'
-    if mode == 'emergency' and (delta['new_alerts'] or delta['worsened_alerts'] or delta['new_letters']):
+    supervised_emergency = bool(acknowledged_hostiles or acknowledged_fires)
+    if (mode == 'emergency' and not supervised_emergency and
+            (delta['new_alerts'] or delta['worsened_alerts'] or delta['new_letters'])):
         return 'event'
     if allow_completion and current['value'] is not None and current['value'] >= goal['at_least']:
         return 'completed'

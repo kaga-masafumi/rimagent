@@ -242,6 +242,22 @@ def test_known_fire_alert_does_not_block_extinguishing():
     assert watch.reason_for(current, delta, GOAL, mode='emergency') == 'danger'
 
 
+def test_supervised_emergency_ignores_ordinary_alerts_but_keeps_critical_stop(tmp_path):
+    class Event(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.summary': result['hostiles'] = [{'id':'Iguana','pos':[130,130]}]
+            if method == 'state.alerts' and self.resumed:
+                return [{'label':'Mood risk','priority':self.options.get('priority','Medium')}]
+            return result
+    ordinary = run(tmp_path, Event(priority='Medium'), mode='emergency', seconds=3, poll=1,
+                   acknowledged_hostiles=['Iguana'])
+    assert ordinary['reason'] == 'timeout' and ordinary['elapsed_wall_seconds'] == 3
+    critical = run(tmp_path, Event(priority='Critical'), mode='emergency', seconds=10, poll=1,
+                    acknowledged_hostiles=['Iguana'])
+    assert critical['reason'] == 'danger' and critical['elapsed_wall_seconds'] == 1
+
+
 @pytest.mark.parametrize('threat', ['hostile', 'downed'])
 def test_maintenance_does_not_delay_new_emergencies(tmp_path, threat):
     class Threat(Game):
