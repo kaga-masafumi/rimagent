@@ -94,7 +94,11 @@ def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
             (current['summary'].get('danger') == 'High' and
              not any(h.get('id') in acknowledged_hostiles for h in hostiles))):
         return 'danger'
-    if any(a.get('priority') == 'Critical' for a in current['alerts']):
+    known_fire_alert = (acknowledged_fires and current['summary'].get('fire_ids') and
+                        set(current['summary']['fire_ids']).issubset(acknowledged_fires))
+    if any(a.get('priority') == 'Critical' and
+           not (known_fire_alert and a.get('label') == '火災発生!')
+           for a in current['alerts']):
         return 'danger'
     if any(letter.get('def') == 'Death' or
            (letter.get('def') in ('ThreatBig', 'ThreatSmall') and

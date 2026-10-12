@@ -233,6 +233,15 @@ def test_acknowledged_fire_can_be_extinguished_but_new_fire_interrupts(tmp_path)
     assert result['reason'] == 'danger' and result['elapsed_wall_seconds'] == 1
 
 
+def test_known_fire_alert_does_not_block_extinguishing():
+    current = {'summary': {'fires': 1, 'fire_ids': ['Fire1'], 'hostiles': [], 'home_center': [100, 100]},
+               'alerts': [{'label': '火災発生!', 'priority': 'Critical'}], 'value': None}
+    delta = {'new_alerts': [], 'worsened_alerts': [], 'new_letters': []}
+    assert watch.reason_for(current, delta, GOAL, mode='emergency',
+                           acknowledged_fires=['Fire1']) is None
+    assert watch.reason_for(current, delta, GOAL, mode='emergency') == 'danger'
+
+
 @pytest.mark.parametrize('threat', ['hostile', 'downed'])
 def test_maintenance_does_not_delay_new_emergencies(tmp_path, threat):
     class Threat(Game):
