@@ -38,6 +38,10 @@ def rpc(url, method, params):
     return result.get('result')
 
 
+class ControllerBusy(RuntimeError):
+    pass
+
+
 @contextmanager
 def lock(repo):
     runs = repo / 'runs'
@@ -56,7 +60,7 @@ def lock(repo):
                 import fcntl
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RuntimeError('play/assist or another controller is active; stop it first') from exc
+            raise ControllerBusy('play/assist or another controller is active; stop it first') from exc
         try:
             yield
         finally:
@@ -85,6 +89,101 @@ def find_repo():
     return Path.cwd()
 
 
+def mission_state(repo):
+    path = repo / 'runs/director-mission.json'
+    if not path.exists():
+        return {'combat_owner': 'codex', 'human_control': False}
+    state = json.loads(path.read_text(encoding='utf-8'))
+    if (state.get('combat_owner') not in ('codex', 'human') or
+            type(state.get('human_control')) is not bool):
+        raise ValueError('Invalid director mission state; inspect before continuing')
+    return state
+
+
+def save_mission(repo, state):
+    path = repo / 'runs/director-mission.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    with temporary.open('w', encoding='utf-8') as handle:
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+    record(repo, {'stage': 'mission', 'state': state})
+    return state
+
+
+def require_codex_control(repo):
+    state = mission_state(repo)
+    if state['human_control'] or handoff_requested(repo):
+        raise RuntimeError('Human combat control is active; no Codex mutations or waits until mission return')
+    return state
+
+
+def handoff_requested(repo):
+    return (repo / 'runs/director-human-request').exists()
+
+
+def combat_present(summary, letters=()):
+    return bool(summary.get('hostiles') or any(
+        item.get('def') in ('ThreatBig', 'ThreatSmall') for item in letters))
+
+
+def handoff_combat(repo, status, summary):
+    state = mission_state(repo)
+    result = save_mission(repo, {**state, 'combat_owner': 'human', 'human_control': True,
+        'handoff': {'seed': status.get('seed'), 'map_size': status.get('map_size'),
+                    'tick': status['tick'], 'hostiles': summary.get('hostiles', [])}})
+    (repo / 'runs/director-human-request').unlink(missing_ok=True)
+    return result
+
+
+def mission_command(url, repo, action, combat_owner=None):
+    if combat_owner not in (None, 'codex', 'human'):
+        raise ValueError('Combat owner must be codex or human')
+    if action == 'status':
+        return {**mission_state(repo), 'handoff_pending': handoff_requested(repo)}
+    if action == 'handoff':
+        if mission_state(repo)['human_control']:
+            raise RuntimeError('Human control is already active; do not interrupt the human')
+        marker = repo / 'runs/director-human-request'
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        try:
+            with lock(repo):
+                state = mission_state(repo)
+                save_mission(repo, {**state, 'combat_owner': 'human', 'human_control': True})
+                marker.unlink(missing_ok=True)
+                rpc(url, 'game.pause', {'paused': True})
+                status = rpc(url, 'game.status', {})
+                if status.get('state') != 'playing' or not status.get('paused'):
+                    raise RuntimeError('Handoff pause was not confirmed; pause manually')
+                return handoff_combat(repo, status, rpc(url, 'state.summary', {}))
+        except ControllerBusy:
+            return {'handoff_pending': True, 'human_control': False,
+                    'message': 'Wait will pause at its next poll; await confirmed human_handoff. If play/assist holds the lock, stop it and retry handoff.'}
+    with lock(repo):
+        state = mission_state(repo)
+        if action == 'start' and (state['human_control'] or handoff_requested(repo)):
+            raise RuntimeError('Human control is active; use mission return explicitly')
+        if action == 'start':
+            # The caller must ask the user at mission start; omitted choice uses Codex.
+            return save_mission(repo, {'combat_owner': combat_owner or 'codex',
+                                      'human_control': False})
+        if action != 'return':
+            raise ValueError('Unknown mission action')
+        status = rpc(url, 'game.status', {})
+        if status.get('state') != 'playing' or not status.get('paused'):
+            raise RuntimeError('Human must pause the game before returning control')
+        summary = rpc(url, 'state.summary', {})
+        if combat_present(summary) and combat_owner != 'codex':
+            raise RuntimeError('Hostiles remain; finish combat or explicitly return with --combat-owner codex')
+        result = save_mission(repo, {'combat_owner': combat_owner or state['combat_owner'],
+                                   'human_control': False})
+        (repo / 'runs/director-human-request').unlink(missing_ok=True)
+        return result
+
+
 def execute(url, repo, method, params, write=False):
     if method in READ or method.startswith(('state.', 'defs.')):
         return rpc(url, method, params)
@@ -95,11 +194,19 @@ def execute(url, repo, method, params, write=False):
     if method == 'game.pause' and params.get('paused') is not True:
         raise ValueError('Use game.speed to resume; game.pause only accepts paused=true')
     with lock(repo):
+        mission = require_codex_control(repo)
         status = rpc(url, 'game.status', {})
         if status.get('state') != 'playing':
             raise RuntimeError('Load a colony first')
         if method != 'game.pause' and not status.get('paused'):
             raise RuntimeError('Pause and verify the game before changing it')
+        if mission['combat_owner'] == 'human' and method != 'game.pause':
+            summary = rpc(url, 'state.summary', {})
+            if combat_present(summary):
+                handoff_combat(repo, status, summary)
+                raise RuntimeError('Combat detected; human control activated, mutation refused')
+            if method == 'ui.attack' or (method == 'ui.draft' and params.get('drafted')):
+                raise RuntimeError('Combat belongs to the human for this mission')
         operation = str(uuid.uuid4())
         record(repo, {'id': operation, 'stage': 'intent', 'method': method, 'params': params})
         try:
@@ -118,6 +225,9 @@ def main():
     parser.add_argument('--repo', type=Path, default=find_repo())
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('health')
+    mission = commands.add_parser('mission')
+    mission.add_argument('action', choices=('start', 'status', 'handoff', 'return'))
+    mission.add_argument('--combat-owner', choices=('codex', 'human'))
     methods = commands.add_parser('methods')
     methods.add_argument('--filter', default='')
     call = commands.add_parser('rpc')
@@ -133,7 +243,11 @@ def main():
     parsed = urlparse(args.url)
     if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1'):
         parser.error('Only a loopback HTTP bridge is supported')
-    if args.command == 'rpc':
+    if args.command == 'mission':
+        if not (args.repo / 'agent' / 'rimagent' / 'session_lock.py').is_file():
+            raise ValueError('Use --repo to select the rimagent checkout')
+        result = mission_command(args.url, args.repo, args.action, args.combat_owner)
+    elif args.command == 'rpc':
         params = json.loads(args.params_file.read_text(encoding='utf-8-sig')) if args.params_file else {}
         if not isinstance(params, dict):
             raise ValueError('Parameters must be a JSON object')

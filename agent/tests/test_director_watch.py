@@ -50,6 +50,78 @@ class Clock:
         self.elapsed += duration
         self.game.tick += -1 if self.game.options.get('rollback') else 100
 
+
+class CombatGame(Game):
+    def rpc(self, url, method, params):
+        result = super().rpc(url, method, params)
+        if method == 'state.summary' and (self.resumed or self.options.get('existing_hostile')):
+            result['hostiles'] = [{'id': 'Enemy', 'pos': [180, 180]}]
+        return result
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_human_handoff_cannot_be_bypassed_by_acknowledgement(tmp_path, existing):
+    watch.bridge.mission_command('unused', tmp_path, 'start', 'human')
+    game = CombatGame(existing_hostile=existing)
+    result = run(tmp_path, game, acknowledged_hostiles=['Enemy'] if existing else [])
+    assert result['reason'] == 'human_handoff'
+    assert result['paused'] and result['human_control']
+    assert game.resumed is (not existing)
+    assert watch.bridge.mission_state(tmp_path)['human_control']
+    with patch.object(watch.bridge, 'rpc') as rpc:
+        with pytest.raises(RuntimeError, match='Human combat control'):
+            watch.wait('unused', tmp_path, GOAL, write=True)
+        rpc.assert_not_called()
+
+
+def test_codex_default_retains_supervised_combat(tmp_path):
+    game = CombatGame(existing_hostile=True)
+    result = run(tmp_path, game, acknowledged_hostiles=['Enemy'])
+    assert result['reason'] == 'timeout'
+    assert result['combat_owner'] == 'codex'
+    assert not result['human_control']
+
+
+def test_human_handoff_on_new_threat_letter_without_visible_enemy(tmp_path):
+    class LetterGame(Game):
+        def rpc(self, url, method, params):
+            result = super().rpc(url, method, params)
+            if method == 'state.letters' and self.resumed:
+                return [{'id': 1, 'def': 'ThreatBig', 'target': 'Enemy'}]
+            return result
+    watch.bridge.mission_command('unused', tmp_path, 'start', 'human')
+    result = run(tmp_path, LetterGame())
+    assert result['reason'] == 'human_handoff'
+    assert watch.bridge.mission_state(tmp_path)['human_control']
+
+
+def test_handoff_remains_latched_when_pause_fails(tmp_path):
+    watch.bridge.mission_command('unused', tmp_path, 'start', 'human')
+    result = run(tmp_path, CombatGame(existing_hostile=True, fail_pause=True))
+    assert result['reason'] == 'error' and not result['paused']
+    assert result['human_control']
+    assert watch.bridge.mission_state(tmp_path)['human_control']
+
+
+def test_handoff_request_interrupts_active_routine_wait(tmp_path):
+    game = Game()
+    clock = Clock(game)
+    def request_during_sleep(duration):
+        clock.sleep(duration)
+        pending = watch.bridge.mission_command('unused', tmp_path, 'handoff')
+        assert pending['handoff_pending'] and not pending['human_control']
+    with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), \
+            patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), \
+            patch.object(watch.time, 'sleep', side_effect=request_during_sleep):
+        result = watch.wait('unused', tmp_path, GOAL, write=True, mode='routine')
+    assert result['reason'] == 'human_handoff'
+    assert result['elapsed_wall_seconds'] == 2
+    assert result['combat_owner'] == 'human'
+    assert game.calls.count('game.speed') == 1
+    assert game.calls.count('game.pause') == 1
+    assert watch.bridge.mission_state(tmp_path)['combat_owner'] == 'human'
+    assert not watch.bridge.handoff_requested(tmp_path)
+
 def run(tmp_path, game, *, mode='emergency', seconds=3, poll=1, **kwargs):
     clock = Clock(game)
     with patch.object(watch.bridge, 'rpc', side_effect=game.rpc), patch.object(watch.time, 'monotonic', side_effect=clock.monotonic), patch.object(watch.time, 'sleep', side_effect=clock.sleep):

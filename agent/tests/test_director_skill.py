@@ -58,3 +58,61 @@ def test_repo_discovery_works_outside_personal_install(monkeypatch):
     monkeypatch.delenv('RIMAGENT_ROOT', raising=False)
     monkeypatch.chdir(ROOT / 'agent')
     assert control.find_repo() == ROOT
+
+
+def test_mission_defaults_and_restart_persistence(tmp_path):
+    assert control.mission_state(tmp_path)['combat_owner'] == 'codex'
+    control.mission_command('unused', tmp_path, 'start', 'human')
+    control.handoff_combat(tmp_path, {'tick': 10}, {'hostiles': [{'id': 'Enemy'}]})
+    with patch.object(control, 'rpc') as rpc:
+        for method in ('game.speed', 'game.pause', 'ui.goto', 'ui.attack', 'ui.build', 'ui.dialog'):
+            with pytest.raises(RuntimeError, match='Human combat control'):
+                control.execute('unused', tmp_path, method, {'speed': 3, 'paused': True}, True)
+        with pytest.raises(RuntimeError, match='Human control'):
+            control.mission_command('unused', tmp_path, 'start', 'codex')
+        with pytest.raises(RuntimeError, match='already active'):
+            control.mission_command('unused', tmp_path, 'handoff')
+        rpc.assert_not_called()
+    with patch.object(control, 'rpc', return_value=[]) as rpc:
+        assert control.execute('unused', tmp_path, 'state.pawns', {}) == []
+        rpc.assert_called_once()
+
+
+def test_human_owner_blocks_mutation_on_hostile_detection(tmp_path):
+    control.mission_command('unused', tmp_path, 'start', 'human')
+    with patch.object(control, 'rpc', side_effect=[{'state': 'playing', 'paused': True, 'tick': 100},
+                                                   {'hostiles': [{'id': 'Enemy'}]}]) as rpc:
+        with pytest.raises(RuntimeError, match='Combat detected'):
+            control.execute('unused', tmp_path, 'ui.goto', {}, True)
+        assert [c.args[1] for c in rpc.call_args_list] == ['game.status', 'state.summary']
+    assert control.mission_state(tmp_path)['human_control']
+
+
+def test_handoff_pause_failure_keeps_control_blocked(tmp_path):
+    with patch.object(control, 'rpc', side_effect=TimeoutError('pause failed')):
+        with pytest.raises(TimeoutError):
+            control.mission_command('unused', tmp_path, 'handoff')
+    assert control.mission_state(tmp_path)['human_control']
+
+
+def test_return_requires_human_pause_and_explicit_codex_takeover(tmp_path):
+    control.handoff_combat(tmp_path, {'tick': 10}, {})
+    with patch.object(control, 'rpc', return_value={'state': 'playing', 'paused': False}):
+        with pytest.raises(RuntimeError, match='Human must pause'):
+            control.mission_command('unused', tmp_path, 'return')
+    assert control.mission_state(tmp_path)['human_control']
+    replies = [{'state': 'playing', 'paused': True}, {'hostiles': [{'id': 'Enemy'}]}]
+    with patch.object(control, 'rpc', side_effect=replies):
+        with pytest.raises(RuntimeError, match='Hostiles remain'):
+            control.mission_command('unused', tmp_path, 'return')
+    with patch.object(control, 'rpc', side_effect=replies) as rpc:
+        result = control.mission_command('unused', tmp_path, 'return', 'codex')
+        assert not result['human_control']
+        assert result['combat_owner'] == 'codex'
+        assert 'game.speed' not in [c.args[1] for c in rpc.call_args_list]
+    control.handoff_combat(tmp_path, {'tick': 100}, {})
+    with patch.object(control, 'rpc', side_effect=[{'state': 'playing', 'paused': True},
+                                                   {'hostiles': []}]) as rpc:
+        result = control.mission_command('unused', tmp_path, 'return')
+        assert result == {'combat_owner': 'human', 'human_control': False}
+        assert 'game.speed' not in [c.args[1] for c in rpc.call_args_list]

@@ -85,7 +85,10 @@ def changes(previous, current):
 
 
 def reason_for(current, delta, goal, *, mode='emergency', allow_completion=True,
-               acknowledged_hostiles=(), acknowledged_fires=(), acknowledged_downed=()):
+               acknowledged_hostiles=(), acknowledged_fires=(), acknowledged_downed=(),
+               combat_owner='codex'):
+    if combat_owner == 'human' and bridge.combat_present(current['summary'], delta['new_letters']):
+        return 'human_handoff'
     hostiles = current['summary'].get('hostiles', [])
     home = current['summary'].get('home_center')
     downed_ids = current['summary'].get('downed_ids', [])
@@ -157,11 +160,13 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
         raise ValueError('Tick limits must be positive integers')
     # Hold the same controller lock for the entire resume/observe/pause interval.
     with bridge.lock(repo):
+        mission = bridge.require_codex_control(repo)
         status = bridge.rpc(url, 'game.status', {})
         if status.get('state') != 'playing' or not status.get('paused'):
             raise RuntimeError('Pause and verify a loaded colony before waiting')
         baseline = current = observe(url, goal)
         reason = reason_for(current, changes(current, current), goal, mode=mode,
+                            combat_owner=mission['combat_owner'],
                             acknowledged_hostiles=acknowledged_hostiles,
                             acknowledged_fires=acknowledged_fires,
                             acknowledged_downed=acknowledged_downed)
@@ -187,6 +192,9 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
                     reason = 'timeout' if mode == 'emergency' else f'{mode}_check'
                     break
                 time.sleep(min(poll, remaining))
+                if bridge.handoff_requested(repo):
+                    reason = 'human_handoff'
+                    break
                 sample = observe(url, goal, measure_progress=mode == 'emergency')
                 if sample['value'] is None:
                     sample['value'] = current['value']
@@ -198,6 +206,7 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
                 current = sample
                 delta = changes(baseline, current)
                 reason = reason_for(current, delta, goal, mode=mode,
+                                    combat_owner=mission['combat_owner'],
                                     allow_completion=mode == 'emergency',
                                     acknowledged_hostiles=acknowledged_hostiles,
                                     acknowledged_fires=acknowledged_fires,
@@ -229,6 +238,7 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
                     if current['status'].get('paused') is not True:
                         raise RuntimeError('Game resumed during final observation; pause was not confirmed')
                     reason = reason_for(current, changes(baseline, current), goal, mode=mode,
+                                        combat_owner=mission['combat_owner'],
                                         acknowledged_hostiles=acknowledged_hostiles,
                                         acknowledged_fires=acknowledged_fires,
                                         acknowledged_downed=acknowledged_downed) or reason
@@ -239,7 +249,13 @@ def wait(url, repo, goal, *, write=False, seconds=None, poll=None, speed=None,
             except Exception as exc:
                 pause_error = str(exc)
         delta = changes(baseline, current)
+        if bridge.handoff_requested(repo):
+            reason = 'human_handoff'
+        if reason == 'human_handoff':
+            bridge.handoff_combat(repo, current['status'], current['summary'])
         packet = {'reason': 'error' if pause_error else reason, 'mode': mode,
+                  'combat_owner': 'human' if reason == 'human_handoff' else mission['combat_owner'],
+                  'human_control': reason == 'human_handoff',
                   'acknowledged_hostiles': list(acknowledged_hostiles),
                   'acknowledged_downed': list(acknowledged_downed),
                   'goal_met': error is None and pause_error is None and current['value'] >= goal['at_least'],
