@@ -337,6 +337,17 @@ def test_close_acknowledged_hostile_can_run_emergency_ticks(tmp_path):
                  acknowledged_hostiles=['Iguana'])
     assert result['reason'] == 'timeout' and result['elapsed_wall_seconds'] == 6
 
+def test_acknowledged_downed_pawn_can_be_rescued_but_new_down_stops():
+    goal = GOAL
+    current = {'summary': {'downed': 1, 'downed_ids': ['Sapphire'], 'hostiles': [],
+                           'home_center': [100, 100]},
+               'alerts': [], 'value': None}
+    delta = {'new_alerts': [], 'worsened_alerts': [], 'new_letters': []}
+    assert watch.reason_for(current, delta, goal, acknowledged_downed=['Sapphire']) is None
+    current['summary']['downed_ids'].append('Mila')
+    current['summary']['downed'] = 2
+    assert watch.reason_for(current, delta, goal, acknowledged_downed=['Sapphire']) == 'danger'
+
 
 def test_routine_acknowledgement_does_not_ignore_new_hostile(tmp_path):
     class NewEnemy(Game):
